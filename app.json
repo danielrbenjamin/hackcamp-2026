@@ -1,0 +1,16 @@
+{
+  "expo": {
+    "name": "Lantern",
+    "slug": "navigation-belt",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "scheme": "navigationbelt",
+    "platforms": ["ios", "web"],
+    "ios": {
+      "bundleIdentifier": "com.hackcamp2026.navigationbelt",
+      "infoPlist": {
+        "NSCameraUsageDescription": "The navigation prototype uses the camera and LiDAR to measure obstacles while sensing is active."
+      }
+    }
+  }
+}

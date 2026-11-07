@@ -1,0 +1,17 @@
+node_modules/
+.expo/
+dist/
+/ios/
+/android/
+*.log
+__pycache__/
+*.ndjson
+.env*
+!/.env.example
+credentials.json
+*.mobileprovision
+*.p12
+*.p8
+.DS_Store
+*.mlpackage/
+*.mlmodelc/

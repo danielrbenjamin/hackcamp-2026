@@ -1,0 +1,279 @@
+import { useEffect, useRef, useState } from 'react'
+import { createRoot } from 'react-dom/client'
+import { HEADINGS, ZONE_NAMES, type Telemetry } from '../shared/contracts'
+import { createLoop } from '../shared/guidance'
+import { createMock, type Scenario } from '../shared/mock'
+import { LANTERN_BANNER } from '../shared/lantern'
+import { PointCloud, simulatedPoints } from './PointCloud'
+import './style.css'
+
+const scenarios: Record<Scenario, string> = { walk: 'Walkway', obstacle: 'Obstacle', dropout: 'Sensor dropout' }
+const cueLabels = { idle: 'Waiting for guidance', direction: 'Directional cue', obstacle: 'Obstacle warning', unavailable: 'Depth unavailable' }
+const cellColors = ['#101722', '#275260', '#f5ae5e']
+type Evaluation = { model_version: string; candidate_accuracy: number; baseline_accuracy: number }
+
+function Dashboard() {
+  const [mock] = useState(createMock)
+  const [scenario, setScenario] = useState<Scenario>('walk')
+  const [connected, setConnected] = useState(true)
+  const [simulation, setSimulation] = useState<Telemetry>()
+  const [phone, setPhone] = useState<Telemetry>()
+  const [tokenInput, setTokenInput] = useState('')
+  const [token, setToken] = useState('')
+  const [link, setLink] = useState('')
+  const [mapView, setMapView] = useState<'cloud' | 'grid'>('cloud')
+  const [evaluation, setEvaluation] = useState<Evaluation>()
+  const [evaluationError, setEvaluationError] = useState('')
+  const [events, setEvents] = useState<{ time: number; text: string }[]>([])
+  const [terminal, setTerminal] = useState(true)
+  const [sidePane, setSidePane] = useState<'explorer' | 'inspector' | null>(null)
+  const [inspection, setInspection] = useState<'guidance' | 'model' | 'belt'>('guidance')
+  const [commandInput, setCommandInput] = useState('')
+  const [history, setHistory] = useState<string[]>([])
+  const terminalOutput = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const output = terminalOutput.current
+    if (output) output.scrollTop = output.scrollHeight
+  }, [events, history, terminal])
+
+  useEffect(() => {
+    const loop = createLoop(mock.providers)
+    const tick = () => setSimulation(loop.tick())
+    tick()
+    const timer = window.setInterval(tick, 150)
+    return () => { window.clearInterval(timer); loop.stop() }
+  }, [mock])
+
+  useEffect(() => {
+    if (!token) return
+    let timer: number | undefined
+    const controller = new AbortController()
+    async function poll() {
+      try {
+        const response = await fetch('/api/telemetry', { signal: controller.signal,
+          headers: { Authorization: `Bearer ${token}` } })
+        if (!response.ok) throw new Error(`Relay returned ${response.status}`)
+        const data = await response.json() as { receivedAt: number; frame: Telemetry } | null
+        if (controller.signal.aborted) return
+        const fresh = data && Date.now() - data.receivedAt < 2_000
+        setPhone(fresh ? data.frame : undefined)
+        setLink(fresh ? 'Receiving phone telemetry' : 'Waiting for phone telemetry')
+      } catch (error) {
+        if (controller.signal.aborted) return
+        setPhone(undefined)
+        setLink(error instanceof Error ? error.message : 'Relay unavailable')
+      }
+      timer = window.setTimeout(poll, 400)
+    }
+    void poll()
+    return () => { controller.abort(); window.clearTimeout(timer) }
+  }, [token])
+
+  const frame = token ? phone : simulation
+  const eventText = frame ? `${cueLabels[frame.command.cue]} · ${frame.belt.connected ? 'belt online' : 'belt offline'}` : null
+  const eventTime = frame?.observation.timeMs
+  useEffect(() => {
+    if (!eventText || !eventTime) return
+    setEvents(current => current[0]?.text === eventText ? current : [{ time: eventTime, text: eventText }, ...current].slice(0, 6))
+  }, [eventText, eventTime])
+
+  const controls = <form className="link-form" onSubmit={event => {
+    event.preventDefault()
+    setPhone(undefined)
+    setEvents([])
+    setLink(token ? '' : 'Connecting to phone relay…')
+    setToken(token ? '' : tokenInput.trim())
+  }}>
+    {!token && <input className="relay-token" aria-label="Telemetry token" type="password" autoComplete="off"
+      placeholder="Telemetry token" value={tokenInput} onChange={event => setTokenInput(event.target.value)} />}
+    <button type="submit" disabled={!token && !tokenInput.trim()}>{token ? 'Return to simulation' : 'Connect phone feed'}</button>
+    {token && <span className="dim" role="status">{link}</span>}
+  </form>
+
+  const observation = frame?.observation
+  const grid = observation?.grid
+  const heading = frame?.heading ?? null
+  const prediction = frame?.prediction
+  const route = frame?.route
+  const belt = frame?.belt
+  const command = frame?.command
+  const reflex = frame?.reflex
+  const radians = (heading ?? 0) * Math.PI / 180
+  const source = token ? observation?.source === 'arkit' ? 'iPhone LiDAR' : observation ? 'Phone simulation' : 'Phone relay' : 'Simulation'
+
+  function runCommand() {
+    const input = commandInput.trim().toLowerCase()
+    setCommandInput('')
+    if (!input) return
+    if (input === 'clear') { setHistory([]); return }
+    let result = 'Unknown command. Type help.'
+    if (input === 'help') result = 'help   status   scan   grid   clear'
+    if (input === 'status') result = [source, reflex ?? 'no depth', belt?.connected ? 'belt online' : 'belt offline'].join(' / ')
+    if (input === 'scan' || input === 'grid') {
+      setMapView(input === 'scan' ? 'cloud' : 'grid')
+      result = input === 'scan' ? '3D scan open' : 'Occupancy grid open'
+    }
+    setHistory(current => [...current, '> ' + input, result].slice(-12))
+  }
+
+  return (
+    <main className="workbench">
+      <header className="titlebar">
+        <span className="app-mark" aria-hidden="true">[+]</span>
+        <h1>Lantern</h1>
+        <span className="title-context">/ navigation belt</span>
+        <span className="title-source"><i className="indicator" data-on={Boolean(frame)} />{source}</span>
+      </header>
+      <pre className="wordmark" aria-hidden="true">{LANTERN_BANNER}</pre>
+      <div className="workarea">
+        <nav className="activity" aria-label="Workspace panes">
+          <button title="3D scan" aria-label="Open 3D scan" aria-pressed={mapView === 'cloud'} onClick={() => setMapView('cloud')}>[+]</button>
+          <button title="Occupancy grid" aria-label="Open occupancy grid" aria-pressed={mapView === 'grid'} onClick={() => setMapView('grid')}>[#]</button>
+          <button title="Terminal" aria-label="Toggle terminal" aria-pressed={terminal} onClick={() => setTerminal(!terminal)}>&gt;_</button>
+          <button className="pane-toggle" title="Explorer" aria-label="Toggle Explorer" aria-controls="explorer"
+            aria-expanded={sidePane === 'explorer'} onClick={() => setSidePane(sidePane === 'explorer' ? null : 'explorer')}>[=]</button>
+          <button className="pane-toggle" title="Inspector" aria-label="Toggle Inspector" aria-controls="inspector"
+            aria-expanded={sidePane === 'inspector'} onClick={() => setSidePane(sidePane === 'inspector' ? null : 'inspector')}>[i]</button>
+        </nav>
+        <aside id="explorer" className="explorer" aria-label="Explorer" data-open={sidePane === 'explorer'}>
+          <div className="pane-label side-heading"><h2>Explorer</h2>
+            <button className="pane-toggle" aria-label="Close Explorer" onClick={() => setSidePane(null)}>×</button>
+          </div>
+          <section className="side-section">
+            <h3>Depth source</h3>
+            <div className="tree-item"><i className="indicator" data-on={Boolean(frame)} />{source}</div>
+            {controls}
+          </section>
+          {!token && <section className="side-section" aria-label="Simulator controls">
+            <h3>Scenarios</h3>
+            {(Object.entries(scenarios) as [Scenario, string][]).map(([value, label]) => (
+              <button className="tree-button" key={value} aria-pressed={scenario === value}
+                onClick={() => { mock.setScenario(value); setScenario(value) }}><span aria-hidden="true">{scenario === value ? '>' : '|'}</span>{label}</button>
+            ))}
+            <button className="outline-button belt-control" onClick={() => { mock.setConnected(!connected); setConnected(!connected) }}>
+              {connected ? 'Disconnect belt' : 'Reconnect belt'}
+            </button>
+          </section>}
+          <section className="side-section">
+            <h3>Range returns</h3>
+            <dl className="readouts">
+              {ZONE_NAMES.map((name, i) => <div key={name}><dt>{name}</dt><dd>{observation?.zones[i]?.toFixed(2) ?? '—'} <small>m</small></dd></div>)}
+            </dl>
+          </section>
+        </aside>
+        <section className="editor" aria-label="Scan workspace">
+          <div className="editor-tabs" role="group" aria-label="Map view">
+            <button aria-pressed={mapView === 'cloud'} onClick={() => setMapView('cloud')}><span aria-hidden="true">[+]</span> 3D scan</button>
+            <button aria-pressed={mapView === 'grid'} onClick={() => setMapView('grid')}><span aria-hidden="true">[#]</span> Occupancy grid</button>
+          </div>
+          <div className="viewport">
+            {!grid || !observation ? <p className="waiting">{link || 'Waiting for depth data'}</p>
+              : mapView === 'cloud' ? <PointCloud points={observation.source === 'simulated' ? simulatedPoints(grid) : observation.points}
+                heading={heading} phone={observation.source === 'arkit'} /> : <>
+                <div className="scan">
+                  <svg className="map" viewBox={`0 0 ${grid.width} ${grid.height}`} role="img" aria-label="Occupancy grid with device at bottom centre">
+                    {grid.cells.map((cell, i) => <rect key={i} x={i % grid.width} y={Math.floor(i / grid.width)} width=".94" height=".94" fill={cellColors[cell]} />)}
+                    {heading !== null && <line x1="20" y1="19.5" x2={20 + 10 * Math.sin(radians)} y2={19.5 - 10 * Math.cos(radians)} stroke="#afffe5" strokeWidth=".2" strokeDasharray=".4 .35" />}
+                    <path d="M 20 18.7 L 19.5 19.7 L 20.5 19.7 Z" fill="#f4f8ff" />
+                  </svg>
+                </div>
+                <div className="legend">
+                  <div className="legend-items">{['Unknown', 'Observed free', 'Occupied'].map((label, i) => <span key={label}><i style={{ background: cellColors[i] }} />{label}</span>)}</div>
+                  <span>{grid.height * grid.cellM} m forward / {grid.cellM} m cells</span>
+                </div>
+              </>}
+          </div>
+          {terminal && <section className="terminal" aria-label="Terminal">
+            <div className="pane-label terminal-head"><h2>Terminal</h2><button aria-label="Close terminal" onClick={() => setTerminal(false)}>×</button></div>
+            <div ref={terminalOutput} className="terminal-output" aria-label="Telemetry and command output">
+              {[...events].reverse().map((event, i) => <div key={`${event.time}-${i}`} className="log-line">
+                <time dateTime={new Date(event.time).toISOString()}>{new Date(event.time).toLocaleTimeString('en-GB')}</time>
+                <span className="log-topic">guidance</span><span>{event.text}</span>
+              </div>)}
+              {history.map((line, i) => <div className={line.startsWith('> ') ? 'terminal-command' : 'terminal-reply'} key={i}>{line}</div>)}
+            </div>
+            <form className="prompt" onSubmit={event => { event.preventDefault(); runCommand() }}>
+              <label htmlFor="terminal-input" aria-hidden="true">lantern&gt;</label>
+              <input id="terminal-input" aria-label="Terminal command" value={commandInput} onChange={event => setCommandInput(event.target.value)}
+                placeholder="Type help" autoComplete="off" spellCheck={false} />
+            </form>
+          </section>}
+        </section>
+
+        <aside id="inspector" className="inspector" aria-label="Inspector" data-open={sidePane === 'inspector'}>
+          <div className="pane-label side-heading"><h2>Inspector</h2>
+            <button className="pane-toggle" aria-label="Close Inspector" onClick={() => setSidePane(null)}>×</button>
+          </div>
+          <div className="inspector-tabs" role="group" aria-label="Inspector sections">
+            <button aria-pressed={inspection === 'guidance'} onClick={() => setInspection('guidance')}>Guidance</button>
+            <button aria-pressed={inspection === 'model'} onClick={() => setInspection('model')}>Model</button>
+            <button aria-pressed={inspection === 'belt'} onClick={() => setInspection('belt')}>Belt</button>
+          </div>
+          <section className="inspector-section" data-current={inspection === 'guidance'}>
+            <h3>Guidance</h3>
+            <div className={`decision ${reflex && reflex !== 'clear' ? 'hazard' : ''}`}>
+              <strong>{command ? cueLabels[command.cue] : 'No telemetry'}</strong><span>{heading === null ? '—' : `${heading}°`}</span>
+            </div>
+            <dl className="readouts">
+              <div><dt>Route</dt><dd>{route ? `${route.source === 'google' ? 'Google' : 'Simulated'} / ${route.status}` : '—'}</dd></div>
+              {route?.destination && <div><dt>Destination</dt><dd>{route.destination}</dd></div>}
+              {route?.maneuver && <div><dt>Maneuver</dt><dd>{route.maneuver}</dd></div>}
+              <div><dt>Desired heading</dt><dd>{route?.desiredHeading == null ? '—' : `${route.desiredHeading.toFixed(0)}°`}</dd></div>
+              <div><dt>Reflex</dt><dd>{reflex ?? '—'}</dd></div>
+              {frame?.reflexDispatchMs !== undefined && <div><dt>Sensor to dispatch</dt><dd>{frame.reflexDispatchMs.toFixed(0)} ms</dd></div>}
+              <div><dt>Clearance baseline</dt><dd>{frame?.baselineHeading == null ? '—' : `${frame.baselineHeading}°`}</dd></div>
+            </dl>
+          </section>
+          <section className="inspector-section" data-current={inspection === 'model'}>
+          <h3>Traversability</h3>
+          <div className="scores">
+            {HEADINGS.map((angle, i) => {
+              const score = prediction?.scores[i]
+              return <div key={angle} className={angle === heading ? 'chosen' : undefined}>
+                <span>{angle}°</span><div className="track"><div style={{ width: `${(score ?? 0) * 100}%` }} /></div>
+                <span>{score === undefined ? '—' : `${Math.round(score * 100)}%`}</span>
+              </div>
+            })}
+          </div>
+          <div className="metrics"><span>{prediction?.version ?? 'Clearance baseline'}</span><span>{prediction ? `${prediction.latencyMs.toFixed(2)} ms inference` : '—'}</span></div>
+          <label className="evaluation">
+            MLflow evaluation report
+            <input type="file" accept=".json,application/json" onChange={event => {
+              const file = event.target.files?.[0]
+              if (!file) return
+              void file.text().then(data => {
+                const report: Evaluation = JSON.parse(data)
+                if (typeof report.model_version !== 'string' || ![report.candidate_accuracy, report.baseline_accuracy]
+                  .every(value => Number.isFinite(value) && value >= 0 && value <= 1)) throw new Error()
+                setEvaluation(report)
+                setEvaluationError('')
+              }).catch(() => { setEvaluation(undefined); setEvaluationError('Invalid MLflow evaluation report.') })
+            }} />
+          </label>
+          {evaluationError && <p role="status">{evaluationError}</p>}
+          {evaluation && <p className="evaluation">
+            {evaluation.model_version} · Candidate labels · Model {(evaluation.candidate_accuracy * 100).toFixed(1)}%
+            {' · '}Baseline {(evaluation.baseline_accuracy * 100).toFixed(1)}%
+          </p>}
+          </section>
+          <section className="inspector-section" data-current={inspection === 'belt'}>
+          <h3>Belt output</h3>
+          <p className="dim">{belt?.source === 'simulated' ? 'Simulated / ' : ''}{belt?.connected ? `Connected${belt.battery === null ? '' : ` / ${belt.battery}% battery`}` : 'Disconnected'}</p>
+          <div className="zones motors">
+            {ZONE_NAMES.map((name, i) => <div key={name} title={name} aria-label={name}
+              data-active={Boolean(belt?.connected && (command?.motors[i] ?? 0) > 0)}
+              data-alert={command?.cue === 'obstacle'}><strong>{i + 1}</strong><span>{['LL', 'L', 'C', 'R', 'RR'][i]}</span></div>)}
+          </div>
+          </section>
+        </aside>
+      </div>
+      <footer className="statusbar"><span><i className="indicator" data-on={Boolean(frame)} />{source}</span>
+        <span>reflex: {reflex ?? '—'}</span><span>belt: {belt?.connected ? 'online' : 'offline'}</span>
+        <span className="status-end">telemetry v{frame?.schemaVersion ?? '—'}</span>
+      </footer>
+    </main>
+  )
+}
+
+createRoot(document.getElementById('root')!).render(<Dashboard />)
