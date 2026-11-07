@@ -1,1 +1,1 @@
-Hack Camp 
+Hack Camp 2026
