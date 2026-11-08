@@ -107,8 +107,9 @@ function ModelKey({ kind }: { kind?: 'glass' | 'stairs' | 'person' }) {
   </div>
 }
 
-export const ModelPreview = memo(function ModelPreview({ preview, view, mutedDepth, setMutedDepth }: {
+export const ModelPreview = memo(function ModelPreview({ preview, completed, view, mutedDepth, setMutedDepth }: {
   preview?: Preview
+  completed?: Preview
   view: 'separate' | 'combined' | 'scan'
   mutedDepth: boolean
   setMutedDepth: (value: boolean) => void
@@ -138,7 +139,8 @@ export const ModelPreview = memo(function ModelPreview({ preview, view, mutedDep
         <button aria-pressed={mutedDepth} onClick={() => setMutedDepth(true)}>Muted blue</button>
       </div>}
       {bearing && <span>Glass bearing {bearing.left.toFixed(0)}° to {bearing.right.toFixed(0)}°</span>}
-      <span className="model-latency">{Math.round(preview.latencyMs)} ms{preview.partial ? ' · Partial results' : ''}</span>
+      <span className="model-latency">{Math.round(preview.latencyMs)} ms{preview.partial ? ' · Partial results' : ''}
+        {completed && ` · Last full frame ${Math.round(completed.latencyMs)} ms`}</span>
     </div>
     {view === 'scan' ? (preview.scan || preview.denseScan) ? <>
       <PointCloud points={preview.scan?.points} pointColors={preview.scan?.pointColors} denseScan={preview.denseScan} overlayPoints={overlays}
@@ -176,17 +178,23 @@ export const ModelPreview = memo(function ModelPreview({ preview, view, mutedDep
       </figure>
     </div> : <div className="model-images">
       {(['glass', 'stairs'] as const).map(kind => {
-        const mask = preview.masks.find(item => item.kind === kind)
+        const frame = kind === 'stairs' ? completed ?? preview : preview
+        const image = frame.depthPreview
+        const imageRotation = scanDisplayRotation(frame.denseScan)
+        const imageWidth = image?.width ?? frame.denseScan?.width ?? 128
+        const imageHeight = image?.height ?? frame.denseScan?.height ?? 96
+        const aspect = Math.abs(imageRotation) === 90 ? imageHeight / imageWidth : imageWidth / imageHeight
+        const mask = frame.masks.find(item => item.kind === kind)
         const hasDetection = mask && /[^\x00]/.test(atob(mask.labels))
         return <figure key={kind}>
           <figcaption>{kind === 'glass' ? 'Glass' : 'Stairs'}<span>{mask ? hasDetection ? 'Detected' : 'No detection' : 'No mask'}</span></figcaption>
-          <div className="model-scene" style={{ aspectRatio: displayWidth / displayHeight }}>
-            {depth && <SceneImage depth={depth} muted={mutedDepth} rotation={rotation} />}
+          <div className="model-scene" style={{ aspectRatio: aspect }}>
+            {image && <SceneImage depth={image} muted={mutedDepth} rotation={imageRotation} />}
             {mask && <svg viewBox="0 0 96 96" preserveAspectRatio="none" role="img" aria-label={`${kind} segmentation mask`}>
-              <g transform={`rotate(${rotation} 48 48)`}><ScanMasks masks={[mask]} /></g>
+              <g transform={`rotate(${imageRotation} 48 48)`}><ScanMasks masks={[mask]} /></g>
             </svg>}
           </div>
-          <span>{preview.models[kind]}</span>
+          <span>{frame.models[kind]}</span>
           <ModelKey kind={kind} />
         </figure>
       })}
@@ -203,7 +211,7 @@ export const ModelPreview = memo(function ModelPreview({ preview, view, mutedDep
   </>
 }, (previous, next) => {
   if (previous.view !== next.view || previous.mutedDepth !== next.mutedDepth ||
-      previous.setMutedDepth !== next.setMutedDepth) return false
+      previous.completed !== next.completed || previous.setMutedDepth !== next.setMutedDepth) return false
   const before = previous.preview
   const after = next.preview
   if (before === after) return true

@@ -55,8 +55,13 @@ test('warning telemetry updates independently and a new stream clears cached vis
   assert.equal(request('GET', '/', 'first').data.frame.command.cue, 'obstacle')
   assert.equal(request('GET', '/', 'first').data.frame.modelPreview, undefined)
   assert.equal(request('GET', '/visuals', 'first').data.frame.modelPreview.timeMs, 100)
+  const partial = { ...preview(96), timeMs: 200, partial: true }
+  assert.equal(request('POST', '/visuals', 'first', { ...frame, modelPreview: partial }).status, 204)
+  assert.equal(request('GET', '/visuals', 'first').data.frame.modelPreview.timeMs, 200)
+  assert.equal(request('GET', '/complete-preview', 'first').data.preview.timeMs, 100)
   assert.equal(request('POST', '/', 'second', frame).status, 204)
   assert.equal(request('GET', '/visuals', 'second').data, null)
+  assert.equal(request('GET', '/complete-preview', 'second').data, null)
   assert.equal(request('POST', '/visuals', 'first', frame).status, 409)
 })
 

@@ -75,6 +75,7 @@ export default function App() {
   const [modelPreview, setModelPreview] = useState<ModelPreview>()
   const [modelProgress, setModelProgress] = useState('')
   const latestModelPreview = useRef<ModelPreview | undefined>(undefined)
+  const latestCompletePreview = useRef<ModelPreview | undefined>(undefined)
   const latestDenseScan = useRef<{ denseScan: DenseScan; depthPreview?: DepthPreview; smoothedDepthPreview?: DepthPreview } | undefined>(undefined)
   const [streamStatus, setStreamStatus] = useState('')
   const realBelt = useRef(disconnected)
@@ -243,16 +244,16 @@ export default function App() {
   useEffect(() => {
     if (!native || !previewModels || !nativeDepth?.previewHazards) return
     const listener = nativeDepth.addListener('onHazardPreview', preview => {
-      // Use partial results at startup, then keep the last complete frame visible until its replacement is ready.
-      if (preview.partial && latestModelPreview.current && !latestModelPreview.current.partial) return
       latestModelPreview.current = preview
-      setModelPreview(preview)
+      if (!preview.partial) latestCompletePreview.current = preview
+      setModelPreview(latestCompletePreview.current ?? preview)
     })
     const progress = nativeDepth.addListener('onHazardPreviewStatus', event => setModelProgress(event.message))
     return () => {
       listener.remove()
       progress.remove()
       latestModelPreview.current = undefined
+      latestCompletePreview.current = undefined
       setModelPreview(undefined)
       setModelProgress('')
     }
@@ -269,6 +270,7 @@ export default function App() {
     let sentAt = 0
     let visualKey = ''
     let sentPreviewKey = ''
+    let sentCompletePreview: ModelPreview | undefined
     const interval = setInterval(() => {
       const value = latestFrame.current
       if (request || !value || value.observation.timeMs <= sentAt || AppState.currentState === 'background') return
@@ -290,7 +292,9 @@ export default function App() {
       if (!native || !sharePoints || visualRequest || !value || AppState.currentState === 'background') return
       const scan = latestDenseScan.current
       const freshScan = scan && Math.abs(value.observation.timeMs - scan.denseScan.timeMs) < 900 ? scan : undefined
-      const preview = previewModels ? latestModelPreview.current : undefined
+      const complete = latestCompletePreview.current
+      const pendingComplete = complete && complete !== sentCompletePreview ? complete : undefined
+      const preview = previewModels ? pendingComplete ?? latestModelPreview.current : undefined
       const previewKey = preview ? `${preview.timeMs}/${preview.latencyMs}/${preview.partial}` : ''
       const reusePreview = previewKey !== '' && previewKey === sentPreviewKey
       const legacyScan = value.observation.points || value.observation.depthPreview ? value.observation.timeMs : ''
@@ -313,8 +317,10 @@ export default function App() {
         if (response.ok) {
           visualKey = key
           sentPreviewKey = previewKey
+          if (preview && !preview.partial) sentCompletePreview = preview
         } else if (response.status === 409) {
           sentPreviewKey = ''
+          sentCompletePreview = undefined
           visualKey = ''
         }
       }, () => {}).finally(() => {

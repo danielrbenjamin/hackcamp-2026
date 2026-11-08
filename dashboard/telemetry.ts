@@ -78,11 +78,13 @@ export function validModelPreview(preview: unknown) {
 export function telemetryRelay(token: string | undefined): Plugin {
   let latest: { receivedAt: number; frame: unknown; stream?: string } | null = null
   let visuals: { receivedAt: number; frame: unknown; stream?: string } | null = null
+  let completePreview: { receivedAt: number; preview: ModelPreview; stream: string } | null = null
   return {
     name: 'navigation-telemetry',
     configureServer(server) {
       server.middlewares.use('/api/telemetry', (request, response) => {
         const visualLane = request.url === '/visuals'
+        const completeLane = request.url === '/complete-preview'
         response.setHeader('Cache-Control', 'no-store')
         if (!token || request.headers.authorization !== `Bearer ${token}`) {
           response.writeHead(401).end()
@@ -90,14 +92,14 @@ export function telemetryRelay(token: string | undefined): Plugin {
         }
         if (request.method === 'GET') {
           response.setHeader('Content-Type', 'application/json')
-          const result = visualLane ? visuals : latest
+          const result = completeLane ? completePreview : visualLane ? visuals : latest
           const tag = result ? `"${result.receivedAt}"` : '"empty"'
           response.setHeader('ETag', tag)
           if (request.headers['if-none-match'] === tag) { response.writeHead(304).end(); return }
           response.end(JSON.stringify(result))
           return
         }
-        if (request.method !== 'POST') {
+        if (request.method !== 'POST' || completeLane) {
           response.writeHead(405).end()
           return
         }
@@ -144,8 +146,16 @@ export function telemetryRelay(token: string | undefined): Plugin {
                 frame.modelPreview = previous
               }
               visuals = { receivedAt: Date.now(), frame, stream }
+              const preview = frame.modelPreview as ModelPreview | undefined
+              if (!preview) completePreview = null
+              else if (!preview.partial && completePreview?.preview !== preview) {
+                completePreview = { receivedAt: visuals.receivedAt, preview, stream }
+              }
             } else {
-              if (latest?.stream !== stream) visuals = null
+              if (latest?.stream !== stream) {
+                visuals = null
+                completePreview = null
+              }
               latest = { receivedAt: Date.now(), frame, stream }
             }
             response.writeHead(204).end()

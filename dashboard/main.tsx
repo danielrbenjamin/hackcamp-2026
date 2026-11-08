@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { HAZARD_LABELS, HEADINGS, ZONE_NAMES, type Telemetry } from '../shared/contracts'
+import { HAZARD_LABELS, HEADINGS, ZONE_NAMES, type ModelPreview as Preview, type Telemetry } from '../shared/contracts'
 import { createLoop } from '../shared/guidance'
 import { createMock, scenarios, type Scenario } from '../shared/mock'
 import { LANTERN_BANNER } from '../shared/lantern'
@@ -23,6 +23,7 @@ function Dashboard() {
   const [phone, setPhone] = useState<Telemetry>()
   const [phoneStream, setPhoneStream] = useState<string>()
   const [phoneVisuals, setPhoneVisuals] = useState<{ frame: Telemetry; stream: string } | null>(null)
+  const [completePreview, setCompletePreview] = useState<{ preview: Preview; stream: string } | null>(null)
   const [phoneReceivedAt, setPhoneReceivedAt] = useState<number>()
   const [tokenInput, setTokenInput] = useState('')
   const [token, setToken] = useState('')
@@ -83,28 +84,36 @@ function Dashboard() {
   useEffect(() => {
     if (!token) return
     const controller = new AbortController()
-    let timer: number | undefined
-    let etag: string | null = null
-    async function pollVisuals() {
-      try {
-        const headers: Record<string, string> = { Authorization: `Bearer ${token}` }
-        if (etag) headers['If-None-Match'] = etag
-        const response = await fetch('/api/telemetry/visuals', { headers, signal: controller.signal })
-        if (response.ok) {
-          const data = await response.json() as { frame: Telemetry; stream: string } | null
-          if (!controller.signal.aborted) {
-            etag = response.headers.get('ETag')
-            setPhoneVisuals(data)
+    const timers: number[] = []
+    function watch<T>(path: string, update: (data: T | null) => void, interval: number) {
+      const index = timers.length
+      timers.push(0)
+      let etag: string | null = null
+      async function poll() {
+        try {
+          const headers: Record<string, string> = { Authorization: `Bearer ${token}` }
+          if (etag) headers['If-None-Match'] = etag
+          const response = await fetch(`/api/telemetry/${path}`, { headers, signal: controller.signal })
+          if (response.ok) {
+            const data = await response.json() as T | null
+            if (!controller.signal.aborted) {
+              etag = response.headers.get('ETag')
+              update(data)
+            }
           }
-        }
-      } catch { /* The lightweight feed reports connection status separately. */ }
-      if (!controller.signal.aborted) timer = window.setTimeout(pollVisuals, 180)
+        } catch { /* The lightweight feed reports connection status separately. */ }
+        if (!controller.signal.aborted) timers[index] = window.setTimeout(poll, interval)
+      }
+      void poll()
     }
-    void pollVisuals()
-    return () => { controller.abort(); window.clearTimeout(timer) }
+    watch<{ frame: Telemetry; stream: string }>('visuals', setPhoneVisuals, 180)
+    watch<{ preview: Preview; stream: string }>('complete-preview', setCompletePreview, 350)
+    return () => { controller.abort(); timers.forEach(timer => window.clearTimeout(timer)) }
   }, [token])
 
   const visualFrame = phone && phoneStream && phoneVisuals?.stream === phoneStream ? phoneVisuals.frame : undefined
+  const finishedPreview = visualFrame?.modelPreview?.partial && completePreview?.stream === phoneStream
+    ? completePreview?.preview : undefined
   const frame = token ? phone && visualFrame ? {
     ...phone, modelPreview: visualFrame.modelPreview,
     observation: {
@@ -127,6 +136,7 @@ function Dashboard() {
     setPhone(undefined)
     setPhoneStream(undefined)
     setPhoneVisuals(null)
+    setCompletePreview(null)
     setPhoneReceivedAt(undefined)
     setEvents([])
     setLink(token ? '' : 'Connecting…')
@@ -221,7 +231,8 @@ function Dashboard() {
         <section className="editor" aria-label="Scan workspace">
           <EditorWorkspace layout={layout} setLayout={setLayout} renderView={mapView =>
             mapView === 'combined' || mapView === 'separate' || mapView === 'scan'
-              ? <ModelPreview view={mapView} preview={frame?.modelPreview} mutedDepth={mutedDepth} setMutedDepth={setMutedDepth} />
+              ? <ModelPreview view={mapView} preview={mapView === 'separate' ? frame?.modelPreview : finishedPreview ?? frame?.modelPreview}
+                completed={mapView === 'separate' ? finishedPreview : undefined} mutedDepth={mutedDepth} setMutedDepth={setMutedDepth} />
               : mapView === 'depth' ? <DepthImages observation={observation} />
               : !grid || !observation ? <p className="waiting">{link || 'Waiting for depth data'}</p>
               : mapView === 'cloud' ? <PointCloud points={observation.source === 'simulated' ? simulatedPoints(grid) : observation.points}
