@@ -1,5 +1,5 @@
 import { useEffect, useEffectEvent, useRef, useState, type ComponentRef } from 'react'
-import { AccessibilityInfo, Keyboard, Pressable, StyleSheet, Switch, Text, TextInput, View } from 'react-native'
+import { AccessibilityInfo, Keyboard, Pressable, StyleSheet, Text, TextInput, View } from 'react-native'
 import { requestForegroundPermissionsAsync } from 'expo-location'
 import { AudioGuidanceMode, NavigationProvider, NavigationSessionStatus, NavState, RouteStatus, TravelMode, useNavigation } from '@googlemaps/react-native-navigation-sdk'
 import { routeBearing, type Coordinate } from '../shared/geo'
@@ -7,6 +7,7 @@ import type { Route } from '../shared/contracts'
 import type { GoogleRouteProps } from './GoogleRoute'
 import { nativeDepth, type PlaceSuggestion } from './nativeDepth'
 import { ActionButton } from './ActionButton'
+import { SettingSwitch } from './SettingSwitch'
 import { terminal } from './terminal'
 
 const termsOptions = { title: 'Lantern', companyName: 'Lantern' }
@@ -181,11 +182,15 @@ function WalkingRoute({ onRoute, siriDestination }: GoogleRouteProps) {
     setOnTurnByTurn(events => {
       const event = events[0]
       if (!state.active || !event) return
-      state.maneuver = event.currentStep?.instruction ?? 'Waiting for maneuver'
       if (event.navState !== NavState.ENROUTE) {
+        ++state.request
+        state.path = []
+        state.maneuver = ''
         state.rerouting = true
-      } else if (event.routeChanged || !state.path.length || state.rerouting) {
-        void refresh()
+      } else {
+        const instruction = event.currentStep?.instruction?.trim()
+        if (instruction) state.maneuver = instruction
+        if (event.routeChanged || !state.path.length || state.rerouting) void refresh()
       }
       publish()
     })
@@ -224,6 +229,8 @@ function WalkingRoute({ onRoute, siriDestination }: GoogleRouteProps) {
       if (result !== NavigationSessionStatus.OK) throw new Error(`Google Navigation initialization: ${result}`)
       if (!state.alive) { await controller.cleanup(); return }
       state.initialized = true
+      // The SDK only emits turn-by-turn callbacks when this flag is enabled.
+      controller.setTurnByTurnLoggingEnabled(true)
       await controller.startUpdatingLocation()
       setInitialized(true)
       setStatus('')
@@ -250,7 +257,7 @@ function WalkingRoute({ onRoute, siriDestination }: GoogleRouteProps) {
     setStatus('Finding a walking route…')
     state.destination = title
     state.path = []
-    state.maneuver = 'Calculating walking route'
+    state.maneuver = ''
     state.rerouting = true
     try {
       const waypoint = place ? { title, placeId: place.placeId }
@@ -274,7 +281,6 @@ function WalkingRoute({ onRoute, siriDestination }: GoogleRouteProps) {
       } catch (error) {
         console.warn('Route started, but the announcement could not play.', error)
       }
-      if (state.maneuver === 'Calculating walking route') state.maneuver = 'Waiting for the next maneuver'
       onRoute({ source: 'google', status: 'guiding', destination: title,
         maneuver: state.maneuver, desiredHeading: null, updatedAtMs: state.locationAtMs })
       const request = ++state.request
@@ -339,24 +345,15 @@ function WalkingRoute({ onRoute, siriDestination }: GoogleRouteProps) {
     {!guiding && <>
       <ActionButton label="Route options" expanded={showOptions} onPress={() => setShowOptions(!showOptions)} />
       {showOptions && <>
-        <View style={styles.siriSetting}>
-          <Text style={[styles.label, styles.settingLabel]}>Spoken walking directions</Text>
-          <Switch accessibilityLabel="Spoken walking directions" value={spokenDirections}
-            disabled={busy} onValueChange={setSpokenDirections} />
-        </View>
-        {nativeDepth?.announceRoute && <View style={styles.siriSetting}>
-          <Text style={[styles.label, styles.settingLabel]}>Announce route start</Text>
-          <Switch accessibilityLabel="Announce route start" value={announceStart}
-            disabled={busy} onValueChange={setAnnounceStart} />
-        </View>}
-        {nativeDepth?.setSiriAutoStart && <View style={styles.siriSetting}>
-          <Text style={[styles.label, styles.settingLabel]}>Start Siri routes automatically</Text>
-          <Switch accessibilityLabel="Start Siri routes automatically" value={autoStart} onValueChange={enabled => {
+        <SettingSwitch label="Spoken walking directions" value={spokenDirections} disabled={busy} onChange={setSpokenDirections} />
+        {nativeDepth?.announceRoute && <SettingSwitch label="Announce route start" value={announceStart}
+          disabled={busy} onChange={setAnnounceStart} />}
+        {nativeDepth?.setSiriAutoStart && <SettingSwitch label="Start Siri routes automatically" value={autoStart}
+          disabled={busy} onChange={enabled => {
             nativeDepth?.setSiriAutoStart?.(enabled)
             setAutoStart(enabled)
             if (!enabled) setAutoPlace(null)
-          }} />
-        </View>}
+          }} />}
         {initialized && nativeDepth?.searchPlaces && <ActionButton disabled={busy}
           label={manual ? 'Search by name or address' : 'Enter coordinates or Place ID'}
           onPress={() => { editDestination(''); setManual(!manual) }} />}
@@ -373,6 +370,4 @@ const styles = StyleSheet.create({
   resultsHeading: { color: terminal.accent, fontSize: 17, fontWeight: '600' },
   label: { color: terminal.text, fontSize: 17 },
   attribution: { color: '#aab9c9', fontSize: 12, textAlign: 'right', padding: 8 },
-  siriSetting: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 8, minHeight: 48 },
-  settingLabel: { flex: 1 },
 })

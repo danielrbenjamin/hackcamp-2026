@@ -3,12 +3,12 @@ import { Platform } from 'react-native'
 export const mono = Platform.select({ ios: 'Menlo', default: 'monospace' })
 
 export const terminal = {
-  background: '#090e14',
-  surface: '#111b25',
-  control: '#1b2b39',
-  border: '#647e91',
-  text: '#f2f8fc',
-  muted: '#c2d4e0',
+  background: '#0c1015',
+  surface: '#171e26',
+  control: '#273643',
+  border: '#718799',
+  text: '#f6f9fc',
+  muted: '#c3d0dc',
   accent: '#a7edff',
-  accentText: '#071b25',
+  accentText: '#091921',
 }

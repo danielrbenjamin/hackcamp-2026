@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ComponentRef } from 'react'
-import { AccessibilityInfo, AppState, Platform, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native'
+import { AccessibilityInfo, AppState, Platform, ScrollView, StyleSheet, Text, TextInput, useWindowDimensions, View } from 'react-native'
 import { ZONE_NAMES, type BeltStatus, type Route, type Telemetry } from '../shared/contracts'
 import { createLoop } from '../shared/guidance'
 import { LANTERN_BANNER } from '../shared/lantern'
@@ -8,14 +8,19 @@ import { nativeDepth, type DepthStatus } from './nativeDepth'
 import GoogleRoute from './GoogleRoute'
 import { RouteCard } from './RouteCard'
 import { ActionButton as Control } from './ActionButton'
+import { SettingSwitch } from './SettingSwitch'
 import { mono, terminal } from './terminal'
 import { createRecording, telemetrySummary } from './session'
 
 const telemetryUrl = process.env.EXPO_PUBLIC_TELEMETRY_URL
 const telemetryToken = process.env.EXPO_PUBLIC_TELEMETRY_TOKEN
 const disconnected: BeltStatus = { connected: false, battery: null, source: 'ble' }
+const beltDirections = ['Turn farther left', 'Veer left', 'Go straight', 'Veer right', 'Turn farther right']
+const scenarioChoices = Object.keys(scenarios) as Scenario[]
 
 export default function App() {
+  const { width, fontScale } = useWindowDimensions()
+  const scenarioColumns = width >= 380 && fontScale <= 1.15 ? 2 : 1
   const [mock] = useState(createMock)
   const [frame, setFrame] = useState<Telemetry>()
   const [scenario, setScenario] = useState<Scenario>('walk')
@@ -211,15 +216,24 @@ export default function App() {
     : beltState === 'connected' ? 'Connected' : beltState === 'unavailable' ? 'Bluetooth or belt unavailable' : 'Disconnected'
   const hazardHold = frame?.heading === null && frame.baselineHeading != null &&
     frame.blockedHeadings?.includes(frame.baselineHeading)
-  const warning = cue === 'obstacle' ? 'Obstacle detected'
-    : cue === 'unavailable' ? 'Depth unavailable'
-    : hazardHold ? 'Caution. No direction cue.'
-    : frame?.heading != null ? `Direction cue: ${frame.heading === 0 ? 'ahead' : frame.heading < 0 ? 'left' : 'right'}`
-    : 'No direction cue'
+  const warning = cue === 'obstacle' ? 'Stop. Obstacle ahead.'
+    : hazardHold ? 'Caution. A hazard blocks guidance.'
+    : cue === 'unavailable' ? 'LiDAR cannot verify clearance.' : null
+  const motor = frame?.command.motors.findIndex(strength => strength > 0) ?? -1
+  const direction = cue === 'direction' && frame?.belt.connected ? beltDirections[motor] : undefined
+  const guidanceStatus = direction ?? warning ?? (
+    !frame ? 'Waiting for sensor data'
+      : !frame.belt.connected ? 'Connect the belt'
+      : native && !fieldGuidance ? 'Direction cues are off'
+      : frame.route.status === 'idle' ? 'Start a walk'
+      : frame.route.status === 'rerouting' ? 'Waiting for Google to update the route'
+      : frame.route.desiredHeading === null ? 'Waiting for the route direction and phone heading'
+      : 'No clear direction toward the route'
+  )
 
   useEffect(() => {
-    if (cue === 'obstacle' || cue === 'unavailable' || hazardHold) AccessibilityInfo.announceForAccessibility(warning)
-  }, [cue, hazardHold, warning])
+    if (warning) AccessibilityInfo.announceForAccessibility(warning)
+  }, [warning])
 
   useEffect(() => {
     if (native && beltEnabled && beltState !== 'disconnected') {
@@ -228,13 +242,13 @@ export default function App() {
   }, [native, beltEnabled, beltState, beltStatus])
 
   return (
-    <ScrollView ref={scrollView} style={styles.page} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+    <ScrollView ref={scrollView} style={styles.page} contentContainerStyle={styles.content}
+      contentInsetAdjustmentBehavior="automatic" keyboardDismissMode="on-drag" keyboardShouldPersistTaps="handled">
       <View style={styles.banner}>
         <Text accessible accessibilityRole="header" accessibilityLabel="Lantern"
           allowFontScaling={false} style={styles.wordmark}>{LANTERN_BANNER}</Text>
       </View>
-      {nativeDepth && <Control label={native ? 'Switch to simulation' : 'Use iPhone LiDAR'}
-        primary={!native} onPress={() => setSensorMode(!native)} />}
+      {nativeDepth && !native && <Control label="Use iPhone LiDAR" primary onPress={() => setSensorMode(true)} />}
       {native && <View style={styles.panel}>
         <Text accessibilityRole="header" style={styles.kicker}>Belt</Text>
         <Text style={styles.status}>{beltStatus}{frame?.belt.battery != null ? ` · ${frame.belt.battery}% battery` : ''}</Text>
@@ -242,19 +256,27 @@ export default function App() {
           hint={beltEnabled ? 'Stops belt cues' : 'Searches for your belt over Bluetooth'} onPress={() => {
           setBeltEnabled(!beltEnabled)
         }} />
-        <Control label={fieldGuidance ? 'Disable direction cues' : 'Enable direction cues'}
-          hint="Obstacle warnings stay active while the belt is connected"
-          onPress={() => setFieldGuidance(!fieldGuidance)} />
+        <SettingSwitch label="Direction cues" value={fieldGuidance} onChange={setFieldGuidance}
+          hint="Obstacle warnings stay active while the belt is connected" />
       </View>}
       <View style={[styles.panel, styles.readout, (cue === 'obstacle' || hazardHold) && styles.alertPanel]}>
-        <Text style={styles.value}>{native ? 'Obstacle alerts' : 'Simulated obstacle alerts'}</Text>
-        <Text accessibilityLiveRegion="polite" style={[styles.heading, cue === 'obstacle' && styles.alert]}>{warning}</Text>
+        <Text accessibilityRole="header" style={styles.readoutLabel}>{native ? 'Belt guidance' : 'Simulated belt guidance'}</Text>
+        <Text style={[styles.heading, (cue === 'obstacle' || hazardHold) && styles.alert]}>{guidanceStatus}</Text>
       </View>
-      {!native && <View style={styles.row}>
-        {(Object.keys(scenarios) as Scenario[]).map(value => (
-          <Control key={value} label={scenarios[value]}
-            selected={scenario === value} onPress={() => { mock.setScenario(value); setScenario(value) }} />
-        ))}
+      {!native && <View style={styles.panel}>
+        <Text accessibilityRole="header" style={styles.kicker}>Scenario</Text>
+        <View style={styles.scenarioList}>
+          {Array.from({ length: Math.ceil(scenarioChoices.length / scenarioColumns) }, (_, row) => (
+            <View key={row} style={styles.scenarioRow}>
+              {scenarioChoices.slice(row * scenarioColumns, (row + 1) * scenarioColumns).map(value => (
+                <View key={value} style={styles.scenarioCell}>
+                  <Control label={scenarios[value]} selected={scenario === value} tile={scenarioColumns === 2}
+                    onPress={() => { mock.setScenario(value); setScenario(value) }} />
+                </View>
+              ))}
+            </View>
+          ))}
+        </View>
       </View>}
       {native && <View style={styles.panel} onLayout={event => {
         const y = event.nativeEvent.layout.y
@@ -280,8 +302,10 @@ export default function App() {
           setConnected(!connected)
         }} />
       </View>}
-      <Control label="Testing and data tools" expanded={showTools}
-        onPress={() => setShowTools(!showTools)} />
+      <View style={styles.settings}>
+        <Control label="Testing and data tools" expanded={showTools} onPress={() => setShowTools(!showTools)} />
+        {native && <Control label="Switch to simulation" onPress={() => setSensorMode(false)} />}
+      </View>
       {showTools && <>
       <View style={styles.panel}>
         <Text accessibilityRole="header" style={styles.kicker}>Sensor readings</Text>
@@ -322,20 +346,25 @@ export default function App() {
 
 const styles = StyleSheet.create({
   page: { backgroundColor: terminal.background },
-  content: { padding: 16, paddingTop: Platform.OS === 'web' ? 24 : 68, paddingBottom: 40, gap: 16,
+  content: { padding: 20, paddingTop: Platform.OS === 'web' ? 28 : 16, paddingBottom: 32, gap: 16,
     width: '100%', maxWidth: 560, alignSelf: 'center' },
-  kicker: { color: terminal.accent, fontFamily: mono, fontSize: 19, fontWeight: '700' },
-  banner: { paddingVertical: 12, alignItems: 'center', borderBottomWidth: 1, borderColor: '#314657' },
+  kicker: { color: terminal.text, fontSize: 24, fontWeight: '700' },
+  banner: { paddingVertical: 10, alignItems: 'flex-start' },
   wordmark: { color: terminal.accent, fontFamily: mono, fontSize: 7, lineHeight: 9 },
   heading: { color: terminal.text, fontSize: 22, fontWeight: '700' },
   alert: { color: '#ffc78e' },
   muted: { color: terminal.muted, fontSize: 17 },
-  status: { color: terminal.muted, fontFamily: mono, fontSize: 16 },
+  status: { color: terminal.muted, fontSize: 17 },
   value: { color: terminal.text, fontSize: 17, fontWeight: '600' },
-  panel: { backgroundColor: terminal.surface, borderWidth: 1, borderColor: '#354c5e', borderRadius: 16, padding: 16, gap: 12 },
-  readout: { borderLeftWidth: 3, gap: 4 },
-  alertPanel: { borderColor: '#ffc78e', backgroundColor: '#342418' },
+  panel: { backgroundColor: terminal.surface, borderRadius: 20, padding: 16, gap: 12 },
+  readout: { gap: 4 },
+  readoutLabel: { color: terminal.muted, fontSize: 16, fontWeight: '600' },
+  settings: { gap: 8 },
+  alertPanel: { backgroundColor: '#342418' },
   row: { flexDirection: 'row', gap: 8, flexWrap: 'wrap' },
+  scenarioList: { gap: 8 },
+  scenarioRow: { flexDirection: 'row', gap: 8, alignItems: 'stretch' },
+  scenarioCell: { flex: 1, minWidth: 0 },
   zone: { flexDirection: 'row', justifyContent: 'space-between' },
   input: { color: terminal.text, fontSize: 18, minHeight: 56, borderWidth: 1, borderColor: terminal.border,
     borderRadius: 12, backgroundColor: terminal.background, paddingHorizontal: 14, paddingVertical: 12 },

@@ -16,27 +16,23 @@ export function RouteCard({ route }: { route: Route | undefined }) {
       <Text accessibilityRole="header" style={styles.destination}>{route.destination}</Text>
       {route.maneuver ? <Text style={styles.instruction}>{route.maneuver}</Text> : null}
     </View>
-    {direction && <View style={styles.compass} accessible accessibilityLabel={`Route direction: ${direction}`}>
-      <View style={styles.dial}>
-        <Text accessible={false} style={[styles.arrow, { transform: [{ rotate: `${bearing}deg` }] }]}>↑</Text>
-      </View>
-      <Text aria-hidden style={styles.direction}>{direction}</Text>
+    {direction && <View style={styles.compass} accessible accessibilityLabel={`Route points ${direction}`}>
+      <Text aria-hidden style={[styles.arrow, { transform: [{ rotate: `${bearing}deg` }] }]}>↑</Text>
+      <Text aria-hidden style={styles.direction}>Route points {direction}</Text>
     </View>}
   </View>
 }
 
 const styles = StyleSheet.create({
-  card: { flexDirection: 'row', alignItems: 'center', gap: 10, borderWidth: 1, borderLeftWidth: 3,
+  card: { gap: 10, borderWidth: 1,
     borderColor: '#456776', borderRadius: 12, backgroundColor: terminal.background, padding: 12 },
   rerouting: { borderColor: '#e5b57e' },
-  details: { flex: 1, gap: 4 },
+  details: { gap: 4 },
   state: { color: '#a7edff', fontFamily: mono, fontWeight: '700', fontSize: 17 },
   warning: { color: '#e5b57e' },
   destination: { color: terminal.text, fontSize: 24, fontWeight: '700' },
   instruction: { color: terminal.muted, fontSize: 19 },
-  compass: { alignItems: 'center', gap: 4 },
-  dial: { alignItems: 'center', justifyContent: 'center', width: 42, height: 42,
-    borderWidth: 1, borderColor: '#456776', borderRadius: 21 },
+  compass: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   arrow: { color: '#9dd9e8', fontSize: 25, lineHeight: 31, textAlign: 'center' },
-  direction: { color: terminal.muted, fontSize: 15 },
+  direction: { flexShrink: 1, color: terminal.muted, fontSize: 17 },
 })
