@@ -6,6 +6,7 @@ import { createLoop } from '../shared/guidance'
 import { createMock, emptyObservation, type Scenario } from '../shared/mock'
 import { nativeDepth, type DepthStatus } from './nativeDepth'
 import GoogleRoute from './GoogleRoute'
+import { RouteCard } from './RouteCard'
 import { createRecording, telemetrySummary } from './session'
 
 const telemetryUrl = process.env.EXPO_PUBLIC_TELEMETRY_URL
@@ -250,8 +251,8 @@ export default function App() {
         routeY.current = y
       }}>
         <Text style={styles.kicker}>&gt; Google walking route</Text>
+        <RouteCard route={frame?.route.source === 'google' ? frame.route : undefined} />
         <GoogleRoute onRoute={onRoute} siriDestination={status === 'idle' || status === 'starting' ? undefined : siriDestination} />
-        <Text style={styles.muted}>{frame?.route.maneuver}</Text>
         <Control label="Enable direction cues" selected={fieldGuidance} onPress={() => setFieldGuidance(!fieldGuidance)} />
         <Control label="Enable Core ML" selected={coreML} onPress={() => setCoreML(!coreML)} />
         <Text style={styles.muted}>{frame?.prediction
@@ -263,7 +264,7 @@ export default function App() {
         <TextInput accessibilityLabel="Simulated destination" style={styles.input} value={destination}
           onChangeText={setDestination} onSubmitEditing={() => mock.setDestination(destination)} returnKeyType="go" />
         <Control label="Set destination" onPress={() => mock.setDestination(destination)} />
-        <Text style={styles.muted}>{frame?.route.maneuver}</Text>
+        <RouteCard route={frame?.route.source === 'simulated' ? frame.route : undefined} />
       </View>}
       <View style={styles.panel}>
         <Text style={styles.kicker}>{native && beltEnabled ? `[#] Belt / ${beltState}` : '[#] Simulated belt'}</Text>

@@ -44,10 +44,17 @@ function WalkingRoute({ onRoute, siriDestination }: GoogleRouteProps) {
   useEffect(() => {
     const query = destination.trim()
     if (!initialized || manual || guiding || selected || query.length < (spokenSearch ? 1 : 3) || !nativeDepth?.searchPlaces) return
+    if (spokenSearch && autoStart && !locationReady && nativeDepth.searchPlacesNear) {
+      setSearchStatus('Waiting for your location…')
+      return
+    }
     let active = true
     const timer = setTimeout(async () => {
       try {
-        const matches = await nativeDepth?.searchPlaces?.(query) ?? []
+        const { location, locationAtMs } = session.current
+        const matches = await (location && Date.now() - locationAtMs < 60_000 && nativeDepth?.searchPlacesNear
+          ? nativeDepth.searchPlacesNear(query, location.lat, location.lng)
+          : nativeDepth?.searchPlaces?.(query)) ?? []
         if (!active) return
         setSuggestions(matches)
         const match = spokenSearch && autoStart ? chooseSiriPlace(query, matches) : null
@@ -59,7 +66,7 @@ function WalkingRoute({ onRoute, siriDestination }: GoogleRouteProps) {
       }
     }, 300)
     return () => { active = false; clearTimeout(timer) }
-  }, [destination, initialized, manual, guiding, selected, spokenSearch, autoStart])
+  }, [destination, initialized, manual, guiding, selected, spokenSearch, autoStart, locationReady])
 
   const receiveSiri = useEffectEvent((request: NonNullable<GoogleRouteProps['siriDestination']>) => {
     editDestination(request.query)
@@ -217,7 +224,13 @@ function WalkingRoute({ onRoute, siriDestination }: GoogleRouteProps) {
       if (!state.alive) return
       state.active = true
       await controller.startGuidance()
-      if (!state.alive) return
+      if (!state.alive || !state.active) return
+      setGuiding(true)
+      setStatus('')
+      nativeDepth?.announceRoute?.(place?.label ?? null)
+      if (state.maneuver === 'Calculating walking route') state.maneuver = 'Waiting for the next maneuver'
+      onRoute({ source: 'google', status: 'guiding', destination: title,
+        maneuver: state.maneuver, desiredHeading: null, updatedAtMs: state.locationAtMs })
       const request = ++state.request
       const segment = await controller.getCurrentRouteSegment().catch(() => null)
       if (state.active && request === state.request) {
@@ -228,8 +241,6 @@ function WalkingRoute({ onRoute, siriDestination }: GoogleRouteProps) {
           destination: title, maneuver: state.maneuver, desiredHeading: null, trueBearing: bearing ?? undefined,
           updatedAtMs: state.locationAtMs })
       }
-      setGuiding(true)
-      setStatus('Walking navigation active.')
     } catch (error) {
       state.active = false
       onRoute(null)

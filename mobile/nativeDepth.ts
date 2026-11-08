@@ -18,7 +18,9 @@ interface DepthModule {
   start(): void
   stop(): void
   hasGoogleNavigation(): boolean
+  announceRoute?(destination: string | null): void
   searchPlaces?(query: string): Promise<PlaceSuggestion[]>
+  searchPlacesNear?(query: string, latitude: number, longitude: number): Promise<PlaceSuggestion[]>
   takeSiriDestination?(): Promise<string | null>
   getSiriAutoStart?(): boolean
   setSiriAutoStart?(enabled: boolean): void

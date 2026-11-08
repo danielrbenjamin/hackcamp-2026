@@ -1,5 +1,6 @@
 import ARKit
 import AVFoundation
+import CoreLocation
 import ExpoModulesCore
 import simd
 
@@ -8,6 +9,7 @@ public final class NavigationDepthModule: Module {
   private let belt = BeltLink()
   private let model = TraversabilityModel()
   private let places = PlacesSearch()
+  private let routeSpeech = AVSpeechSynthesizer()
   private var siriObserver: NSObjectProtocol?
 
   public func definition() -> ModuleDefinition {
@@ -35,8 +37,19 @@ public final class NavigationDepthModule: Module {
     Function("hasGoogleNavigation") {
       Bundle.main.object(forInfoDictionaryKey: "GMSApiKey") is String
     }
+    Function("announceRoute") { [routeSpeech = self.routeSpeech] (destination: String?) in
+      DispatchQueue.main.async {
+        let message = destination.map { "Navigating to \($0)." } ?? "Navigating to your destination."
+        routeSpeech.usesApplicationAudioSession = false
+        routeSpeech.stopSpeaking(at: .immediate)
+        routeSpeech.speak(AVSpeechUtterance(string: message))
+      }
+    }
     AsyncFunction("searchPlaces") { [places = self.places] (query: String, promise: Promise) in
       places.search(query, promise: promise)
+    }.runOnQueue(.main)
+    AsyncFunction("searchPlacesNear") { [places = self.places] (query: String, latitude: Double, longitude: Double, promise: Promise) in
+      places.search(query, near: CLLocationCoordinate2D(latitude: latitude, longitude: longitude), promise: promise)
     }.runOnQueue(.main)
 
     Function("connectBelt") { [weak self] in
