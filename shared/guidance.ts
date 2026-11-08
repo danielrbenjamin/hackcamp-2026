@@ -1,4 +1,5 @@
-import { HEADINGS, type Heading, type MotorCommand, type Observation, type Prediction, type Providers, type Route, type Telemetry } from './contracts.ts'
+import { HEADINGS, type Heading, type MotorCommand, type Observation, type Providers, type Route, type Telemetry } from './contracts.ts'
+import { blocksCorridor, validHazards } from './hazards.ts'
 
 export const IDLE: MotorCommand = { cue: 'idle', motors: [0, 0, 0, 0, 0] }
 const OBSTACLE: MotorCommand = { cue: 'obstacle', motors: [1, 1, 1, 1, 1] }
@@ -25,19 +26,19 @@ export function reflex(observation: Observation, now: number): Telemetry['reflex
   return forward.every(validClearance) ? 'clear' : 'unknown'
 }
 
-export function selectHeading(observation: Observation, prediction: Prediction | null, route: Route, previous: Heading | null): Heading | null {
+export function selectHeading(observation: Observation, route: Route, previous: Heading | null,
+  blocked: readonly Heading[] = []): Heading | null {
   if (route.status !== 'guiding' || route.desiredHeading === null || !Number.isFinite(route.desiredHeading)) return null
   let selected: Heading | null = null
   let best = -Infinity
-  for (const [index, heading] of HEADINGS.entries()) {
+  for (const heading of HEADINGS) {
+    if (blocked.includes(heading)) continue
     const clearance = observation.zones[zoneIndex(heading)]
     if (!validClearance(clearance) || clearance < 1.4) continue
-    if (observation.source === 'arkit' && !hasObservedCorridor(observation.grid, heading)) continue
-    const modelScore = prediction ? prediction.scores[index] : 0.65
-    if (!Number.isFinite(modelScore) || modelScore < 0.45 || modelScore > 1) continue
+    if (!hasObservedCorridor(observation.grid, heading)) continue
     const delta = Math.abs(((heading - route.desiredHeading) % 360 + 540) % 360 - 180)
     if (delta > 75) continue
-    const score = modelScore + Math.min(clearance, 5) * 0.06 - delta * 0.012 + (heading === previous ? 0.09 : 0)
+    const score = Math.min(clearance, 5) * 0.06 - delta * 0.012 + (heading === previous ? 0.09 : 0)
     if (score > best) {
       selected = heading
       best = score
@@ -63,8 +64,6 @@ function hasObservedCorridor(grid: Observation['grid'], heading: Heading): boole
 export function createLoop(providers: Providers, allowNativeGuidance = false) {
   let previous: Heading | null = null
   let previousBaseline: Heading | null = null
-  let latest: { observation: Observation; prediction: Prediction | null } | null = null
-  let pending = false
   let active = true
   let previousCommand: string | undefined
   let sentAt = -Infinity
@@ -77,11 +76,14 @@ export function createLoop(providers: Providers, allowNativeGuidance = false) {
       const hazard = reflex(observation, time)
       const route = providers.navigation()
       const belt = providers.belt.status()
-      const prediction = hazard === 'clear' && latest && observation.source === latest.observation.source &&
-        Math.abs(observation.timeMs - latest.observation.timeMs) <= MAX_AGE_MS ? latest.prediction : null
-      const eligible = hazard === 'clear' && (observation.source === 'simulated' || (allowNativeGuidance && route.source === 'google'))
-      const baselineHeading = eligible ? selectHeading(observation, null, route, previousBaseline) : null
-      const heading = eligible && prediction ? selectHeading(observation, prediction, route, previous) : baselineHeading
+      const eligible = hazard === 'clear' &&
+        (observation.source === 'simulated' || (allowNativeGuidance && belt.connected && route.source === 'google'))
+      const detections = observation.hazards
+      const blockedHeadings = hazard !== 'clear' || detections === undefined ? []
+        : validHazards(detections) ? HEADINGS.filter(heading => detections.some(detection => blocksCorridor(detection, heading)))
+        : HEADINGS
+      const baselineHeading = eligible ? selectHeading(observation, route, previousBaseline) : null
+      const heading = eligible ? selectHeading(observation, route, previous, blockedHeadings) : null
       previous = heading
       previousBaseline = baselineHeading
       let command = IDLE
@@ -104,14 +106,7 @@ export function createLoop(providers: Providers, allowNativeGuidance = false) {
       }
       if (!belt.connected) previousCommand = undefined
 
-      if (active && !pending && hazard === 'clear' && latest?.observation.timeMs !== observation.timeMs) {
-        pending = true
-        void Promise.resolve().then(() => providers.model(observation.grid)).then(
-          result => { latest = { observation, prediction: result } },
-          () => { latest = { observation, prediction: null } },
-        ).finally(() => { pending = false })
-      }
-      return { schemaVersion: 1, observation, prediction, route, belt, command, heading, baselineHeading,
+      return { schemaVersion: 1, observation, prediction: null, route, belt, command, heading, baselineHeading, blockedHeadings,
         reflex: hazard, reflexDispatchMs }
     },
     stop() {

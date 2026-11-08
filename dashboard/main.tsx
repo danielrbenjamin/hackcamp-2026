@@ -1,13 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { HEADINGS, ZONE_NAMES, type Telemetry } from '../shared/contracts'
+import { HAZARD_LABELS, HEADINGS, ZONE_NAMES, type Telemetry } from '../shared/contracts'
 import { createLoop } from '../shared/guidance'
-import { createMock, type Scenario } from '../shared/mock'
+import { createMock, scenarios, type Scenario } from '../shared/mock'
 import { LANTERN_BANNER } from '../shared/lantern'
 import { PointCloud, simulatedPoints } from './PointCloud'
 import './style.css'
 
-const scenarios: Record<Scenario, string> = { walk: 'Walkway', obstacle: 'Obstacle', dropout: 'Sensor dropout' }
 const cueLabels = { idle: 'Waiting for guidance', direction: 'Directional cue', obstacle: 'Obstacle warning', unavailable: 'Depth unavailable' }
 const cellColors = ['#101722', '#275260', '#f5ae5e']
 type Evaluation = { model_version: string; candidate_accuracy: number; baseline_accuracy: number }
@@ -94,7 +93,9 @@ function Dashboard() {
   const observation = frame?.observation
   const grid = observation?.grid
   const heading = frame?.heading ?? null
-  const prediction = frame?.prediction
+  const detections = observation?.hazards
+  const blocked = frame?.blockedHeadings
+  const hazardHold = heading === null && frame?.baselineHeading != null && blocked?.includes(frame.baselineHeading)
   const route = frame?.route
   const belt = frame?.belt
   const command = frame?.command
@@ -170,7 +171,7 @@ function Dashboard() {
           <div className="viewport">
             {!grid || !observation ? <p className="waiting">{link || 'Waiting for depth data'}</p>
               : mapView === 'cloud' ? <PointCloud points={observation.source === 'simulated' ? simulatedPoints(grid) : observation.points}
-                heading={heading} phone={observation.source === 'arkit'} /> : <>
+                heading={heading} hazards={detections} phone={observation.source === 'arkit'} /> : <>
                 <div className="scan">
                   <svg className="map" viewBox={`0 0 ${grid.width} ${grid.height}`} role="img" aria-label="Occupancy grid with device at bottom centre">
                     {grid.cells.map((cell, i) => <rect key={i} x={i % grid.width} y={Math.floor(i / grid.width)} width=".94" height=".94" fill={cellColors[cell]} />)}
@@ -212,8 +213,8 @@ function Dashboard() {
           </div>
           <section className="inspector-section" data-current={inspection === 'guidance'}>
             <h3>Guidance</h3>
-            <div className={`decision ${reflex && reflex !== 'clear' ? 'hazard' : ''}`}>
-              <strong>{command ? cueLabels[command.cue] : 'No telemetry'}</strong><span>{heading === null ? '—' : `${heading}°`}</span>
+            <div className={`decision ${hazardHold || (reflex && reflex !== 'clear') ? 'hazard' : ''}`}>
+              <strong>{hazardHold ? 'Caution · direction withheld' : command ? cueLabels[command.cue] : 'No telemetry'}</strong><span>{heading === null ? '—' : `${heading}°`}</span>
             </div>
             <dl className="readouts">
               <div><dt>Route</dt><dd>{route ? `${route.source === 'google' ? 'Google' : 'Simulated'} / ${route.status}` : '—'}</dd></div>
@@ -226,19 +227,17 @@ function Dashboard() {
             </dl>
           </section>
           <section className="inspector-section" data-current={inspection === 'model'}>
-          <h3>Traversability</h3>
-          <div className="scores">
-            {HEADINGS.map((angle, i) => {
-              const score = prediction?.scores[i]
-              return <div key={angle} className={angle === heading ? 'chosen' : undefined}>
-                <span>{angle}°</span><div className="track"><div style={{ width: `${(score ?? 0) * 100}%` }} /></div>
-                <span>{score === undefined ? '—' : `${Math.round(score * 100)}%`}</span>
-              </div>
-            })}
-          </div>
-          <div className="metrics"><span>{prediction?.version ?? 'Clearance baseline'}</span><span>{prediction ? `${prediction.latencyMs.toFixed(2)} ms inference` : '—'}</span></div>
+          <h3>Hazards</h3>
+          <dl className="readouts">
+            <div><dt>Detections</dt><dd>{detections === undefined ? 'Unavailable' : detections.length}</dd></div>
+            <div><dt>Blocked headings</dt><dd>{HEADINGS.filter(angle => blocked?.includes(angle)).map(angle => `${angle}°`).join(', ') || '—'}</dd></div>
+            {detections?.map((detection, index) => <div key={index}>
+              <dt>{HAZARD_LABELS[detection.kind]}</dt>
+              <dd>{Math.round(detection.confidence * 100)}% · {'position' in detection ? '3D' : 'Depth unknown'}</dd>
+            </div>)}
+          </dl>
           <label className="evaluation">
-            MLflow evaluation report
+            Legacy traversability evaluation
             <input type="file" accept=".json,application/json" onChange={event => {
               const file = event.target.files?.[0]
               if (!file) return

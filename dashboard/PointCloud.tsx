@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { DepthPoint, Grid, Heading } from '../shared/contracts'
+import { HAZARD_LABELS, type DepthPoint, type Grid, type Hazard, type Heading } from '../shared/contracts'
 
 const colors = ['#49608b', '#59a8b2', '#a1b979', '#e9ae6b']
 
@@ -18,9 +18,10 @@ export function simulatedPoints(grid: Grid): DepthPoint[] {
   })
 }
 
-export function PointCloud({ points, heading, phone }: {
+export function PointCloud({ points, heading, hazards, phone }: {
   points: readonly DepthPoint[] | undefined
   heading: Heading | null
+  hazards?: readonly Hazard[]
   phone: boolean
 }) {
   const [yaw, setYaw] = useState(-27)
@@ -62,6 +63,17 @@ export function PointCloud({ points, heading, phone }: {
         <circle cx={project([0, 0, 0])[0]} cy={project([0, 0, 0])[1]} r="4" fill="#c2f2ff" />
         {heading !== null && <path d={`M${project([0, -1.18, 0])}L${project([Math.sin(direction) * 2, -1.18, Math.cos(direction) * 2])}`}
           stroke="#c2f2ff" strokeWidth="2" strokeDasharray="5 4" />}
+        {hazards?.map((hazard, index) => {
+          if (!('position' in hazard)) return null
+          const [x, y] = project(hazard.position)
+          const color = hazard.kind === 'person' ? '#ffc373' : '#ff8d81'
+          return <g key={index}>
+            {hazard.predictedPosition && <path d={`M${x},${y}L${project(hazard.predictedPosition)}`}
+              stroke={color} strokeWidth="2" strokeDasharray="5 4" />}
+            <circle cx={x} cy={y} r="6" fill="none" stroke={color} strokeWidth="2" />
+            <text x={x + 10} y={y - 8} fill={color} fontSize="12">{HAZARD_LABELS[hazard.kind]}</text>
+          </g>
+        })}
       </svg>
       <div className="scan-label">{phone ? 'ARKIT' : 'SIM'} / {points?.length ?? 0} points</div>
       {!points?.length && <p className="scan-empty">{!phone ? 'No depth returns' : points ? 'No depth returns' : 'Enable 3D scan sharing on the iPhone'}</p>}

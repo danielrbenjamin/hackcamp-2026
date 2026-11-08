@@ -1,5 +1,6 @@
 import type { Plugin } from 'vite'
 import { MAX_DEPTH_POINTS } from '../shared/contracts'
+import { validHazards } from '../shared/hazards'
 
 export function telemetryRelay(token: string | undefined): Plugin {
   let latest: { receivedAt: number; frame: unknown } | null = null
@@ -39,6 +40,7 @@ export function telemetryRelay(token: string | undefined): Plugin {
               !Array.isArray(observation?.zones) || observation.zones.length !== 5 ||
               grid?.width !== 40 || grid.height !== 20 || !Array.isArray(grid.cells) || grid.cells.length !== 800 ||
               observation.depth !== undefined || observation.pose !== undefined || !validPoints ||
+              (observation.hazards !== undefined && !validHazards(observation.hazards)) ||
               !Array.isArray(frame.command?.motors) || frame.command.motors.length !== 5 || !frame.route || !frame.belt) {
               response.writeHead(400).end()
               return

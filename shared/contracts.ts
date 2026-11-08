@@ -5,6 +5,14 @@ export type Heading = typeof HEADINGS[number]
 export type Cell = 0 | 1 | 2 // unknown, observed free, occupied
 export type DepthPoint = readonly [right: number, up: number, forward: number]
 export const MAX_DEPTH_POINTS = 900
+export const MAX_HAZARDS = 32
+export const HAZARD_LABELS = { stairs: 'Possible descending stairs', glass: 'Possible glass', person: 'Person' } as const
+
+// Coordinates are in the same phone-relative frame as the observation's scan.
+export type Hazard = { kind: keyof typeof HAZARD_LABELS; confidence: number } & (
+  | { position: DepthPoint; predictedPosition?: DepthPoint }
+  | { bearing: readonly [leftDegrees: number, rightDegrees: number] }
+)
 
 export interface Grid {
   width: number
@@ -24,6 +32,8 @@ export interface Observation {
   sensorTimeMs?: number
   forwardTrueHeading?: number
   points?: readonly DepthPoint[]
+  // Frame-aligned detections. Undefined means unavailable; [] means no detections.
+  hazards?: readonly Hazard[]
   depth?: {
     width: number
     height: number
@@ -70,13 +80,13 @@ export interface Telemetry {
   command: MotorCommand
   heading: Heading | null
   baselineHeading?: Heading | null
+  blockedHeadings?: readonly Heading[]
   reflex: 'clear' | 'obstacle' | 'unknown'
   reflexDispatchMs?: number
 }
 
 export interface Providers {
   lidar: () => Observation
-  model: (grid: Grid) => Promise<Prediction | null>
   navigation: () => Route
   belt: {
     status: () => BeltStatus

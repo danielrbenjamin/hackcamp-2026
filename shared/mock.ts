@@ -1,6 +1,20 @@
-import { HEADINGS, type Cell, type Five, type Grid, type MotorCommand, type Observation, type Providers } from './contracts.ts'
+import { type Cell, type Five, type Grid, type Hazard, type MotorCommand, type Observation, type Providers } from './contracts.ts'
 
-export type Scenario = 'walk' | 'obstacle' | 'dropout'
+export const scenarios = {
+  walk: 'Walkway', obstacle: 'Obstacle', dropout: 'Sensor dropout',
+  stairs: 'Descending stairs', glass: 'Glass', person: 'Crossing person',
+} as const
+export type Scenario = keyof typeof scenarios
+
+function simulatedHazards(scenario: Scenario, time: number): readonly Hazard[] {
+  if (scenario === 'stairs') return [{ kind: 'stairs', confidence: 0.94, position: [0, -1.2, 1.15] }]
+  if (scenario === 'glass') return [{ kind: 'glass', confidence: 0.88, bearing: [-40, 40] }]
+  if (scenario === 'person') {
+    const right = -0.85 + 0.25 * Math.sin(time)
+    return [{ kind: 'person', confidence: 0.91, position: [right, -1.2, 1.1], predictedPosition: [right + 1.4, -1.2, 1.1] }]
+  }
+  return []
+}
 export const GRID_WIDTH = 40
 export const GRID_HEIGHT = 20
 export const CELL_M = 0.25
@@ -34,22 +48,8 @@ export function createMock() {
       const time = elapsed()
       const zones: Five<number | null> = scenario === 'dropout' ? [null, null, null, null, null]
         : [1.6, 2.4, scenario === 'obstacle' ? 0.62 : 4.1, 3.4 + 0.35 * Math.sin(time), 2.2]
-      return { source: 'simulated', timeMs: Date.now(), zones, grid: sampleGrid(time, scenario) }
-    },
-    async model(grid) {
-      const before = performance.now()
-      const scores = HEADINGS.map(heading => {
-        const radians = heading * Math.PI / 180
-        let score = 1
-        for (let distance = 0.5; distance < 3.5; distance += grid.cellM) {
-          const col = Math.floor(grid.width / 2 + Math.sin(radians) * distance / grid.cellM)
-          const row = grid.height - 1 - Math.floor(Math.cos(radians) * distance / grid.cellM)
-          const cell = grid.cells[row * grid.width + col]
-          if (cell !== 1) score -= 0.06
-        }
-        return Math.max(0, score)
-      })
-      return { version: 'mock-grid-v1', scores, latencyMs: performance.now() - before }
+      return { source: 'simulated', timeMs: Date.now(), zones, grid: sampleGrid(time, scenario),
+        hazards: simulatedHazards(scenario, time) }
     },
     navigation: () => ({
       source: 'simulated',

@@ -72,8 +72,7 @@ void loop() {
   portEXIT_CRITICAL(&lock);
   const auto now = millis();
   const auto age = now - current.startedAt;
-  const auto phase = age % 450;
-  const bool warningPulse = current.kind == 2 && (phase < 95 || (phase >= 160 && phase < 255));
+  const bool warningPulse = current.kind == 2 && age % 140 < 75;
   const bool directionPulse = current.kind == 1 && age % 800 < 160;
   const bool on = now - current.receivedAt < timeoutMs && (warningPulse || directionPulse);
   for (size_t i = 0; i < 5; ++i) ledcWrite(pins[i], on ? current.strength[i] : 0);

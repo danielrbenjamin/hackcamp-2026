@@ -3,16 +3,11 @@ import { test } from 'node:test'
 import { createLoop, reflex, selectHeading } from './guidance.ts'
 import { createMock, emptyObservation } from './mock.ts'
 
-test('reflex overrides guidance while inference is still pending', async () => {
+test('reflex overrides guidance even with a model hazard in the same frame', () => {
   const mock = createMock()
-  let inferenceStarted = false
-  const loop = createLoop({ ...mock.providers, model: () => {
-    inferenceStarted = true
-    return new Promise(() => {})
-  } })
+  const loop = createLoop({ ...mock.providers, lidar: () => ({ ...mock.providers.lidar(),
+    hazards: [{ kind: 'glass', confidence: 0.9, bearing: [80, 90] }] }) })
   assert.equal(loop.tick().command.cue, 'direction')
-  await Promise.resolve()
-  assert.equal(inferenceStarted, true)
   mock.setScenario('obstacle')
   const warning = loop.tick()
   assert.equal(warning.heading, null)
@@ -37,8 +32,31 @@ test('close valid returns still warn when other zones are unknown', () => {
 
 test('heading selector rejects unknown clearance and motion outside the candidate envelope', () => {
   const { providers } = createMock()
-  assert.equal(selectHeading(emptyObservation(), null, providers.navigation(), null), null)
-  assert.equal(selectHeading(providers.lidar(), null, { ...providers.navigation(), desiredHeading: 180 }, null), null)
+  assert.equal(selectHeading(emptyObservation(), providers.navigation(), null), null)
+  assert.equal(selectHeading(providers.lidar(), { ...providers.navigation(), desiredHeading: 180 }, null), null)
+})
+
+test('stairs block forward and a predicted pedestrian crossing blocks forward before arrival', () => {
+  const mock = createMock()
+  const loop = createLoop({ ...mock.providers, navigation: () => ({ ...mock.providers.navigation(), desiredHeading: 0 }) })
+  for (const scenario of ['stairs', 'person'] as const) {
+    mock.setScenario(scenario)
+    const frame = loop.tick()
+    assert.equal(frame.baselineHeading, 0)
+    assert.ok(frame.blockedHeadings?.includes(0))
+    assert.notEqual(frame.heading, 0)
+    assert.equal(frame.reflex, 'clear')
+  }
+})
+
+test('unlocated glass suppresses overlapping direction cues without triggering the depth reflex', () => {
+  const mock = createMock()
+  mock.setScenario('glass')
+  const frame = createLoop(mock.providers).tick()
+  assert.equal(frame.blockedHeadings?.length, 9)
+  assert.equal(frame.heading, null)
+  assert.equal(frame.command.cue, 'idle')
+  assert.equal(frame.reflex, 'clear')
 })
 
 test('reconnection replays the current warning rather than the old direction', () => {
@@ -86,4 +104,6 @@ test('real direction requires explicit opt-in and observed corridor cells', () =
   assert.equal(createLoop(native, true).tick().heading, 0)
   const unknown = { ...native, lidar: () => ({ ...known, grid: emptyObservation().grid }) }
   assert.equal(createLoop(unknown, true).tick().heading, null)
+  mock.setConnected(false)
+  assert.equal(createLoop(native, true).tick().heading, null)
 })

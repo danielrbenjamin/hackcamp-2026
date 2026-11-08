@@ -1,13 +1,13 @@
-import { useEffect, useEffectEvent, useRef, useState } from 'react'
-import { Keyboard, Pressable, StyleSheet, Switch, Text, TextInput, View } from 'react-native'
+import { useEffect, useEffectEvent, useRef, useState, type ComponentRef } from 'react'
+import { AccessibilityInfo, Keyboard, Pressable, StyleSheet, Switch, Text, TextInput, View } from 'react-native'
 import { requestForegroundPermissionsAsync } from 'expo-location'
-import { NavigationProvider, NavigationSessionStatus, NavState, RouteStatus, TravelMode, useNavigation } from '@googlemaps/react-native-navigation-sdk'
+import { AudioGuidanceMode, NavigationProvider, NavigationSessionStatus, NavState, RouteStatus, TravelMode, useNavigation } from '@googlemaps/react-native-navigation-sdk'
 import { routeBearing, type Coordinate } from '../shared/geo'
 import type { Route } from '../shared/contracts'
 import type { GoogleRouteProps } from './GoogleRoute'
 import { nativeDepth, type PlaceSuggestion } from './nativeDepth'
 import { ActionButton } from './ActionButton'
-import { mono } from './terminal'
+import { terminal } from './terminal'
 
 const termsOptions = { title: 'Lantern', companyName: 'Lantern' }
 
@@ -29,10 +29,15 @@ function WalkingRoute({ onRoute, siriDestination }: GoogleRouteProps) {
   const [status, setStatus] = useState('')
   const [manual, setManual] = useState(!nativeDepth?.searchPlaces)
   const [selected, setSelected] = useState<PlaceSuggestion | null>(null)
+  const [selectedFromSiri, setSelectedFromSiri] = useState(false)
+  const startButton = useRef<ComponentRef<typeof Pressable>>(null)
+  const focusStart = useRef(false)
   const [suggestions, setSuggestions] = useState<PlaceSuggestion[]>([])
   const [searchStatus, setSearchStatus] = useState('')
   const [busy, setBusy] = useState(false)
   const [showOptions, setShowOptions] = useState(false)
+  const [spokenDirections, setSpokenDirections] = useState(false)
+  const [announceStart, setAnnounceStart] = useState(false)
   const working = useRef(false)
   const [guiding, setGuiding] = useState(false)
   const [initialized, setInitialized] = useState(false)
@@ -43,6 +48,29 @@ function WalkingRoute({ onRoute, siriDestination }: GoogleRouteProps) {
   const handledSiri = useRef<GoogleRouteProps['siriDestination']>(undefined)
   const session = useRef({ initialized: false, active: false, alive: true, request: 0, location: null as Coordinate | null,
     locationAtMs: 0, path: [] as Coordinate[], destination: '', maneuver: '', rerouting: false })
+
+  useEffect(() => {
+    if (!selected || !focusStart.current) return
+    focusStart.current = false
+    const frame = requestAnimationFrame(() => {
+      if (startButton.current) AccessibilityInfo.sendAccessibilityEvent(startButton.current, 'focus')
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [selected])
+
+  useEffect(() => {
+    if (status) AccessibilityInfo.announceForAccessibility(status)
+  }, [status])
+
+  const suggestionCount = suggestions.length
+  useEffect(() => {
+    if (spokenSearch && autoStart) return
+    if (suggestionCount) {
+      AccessibilityInfo.announceForAccessibility(`${suggestionCount} destination ${suggestionCount === 1 ? 'result' : 'results'} available`)
+    } else if (searchStatus && searchStatus !== 'Searching…') {
+      AccessibilityInfo.announceForAccessibility(searchStatus)
+    }
+  }, [suggestionCount, searchStatus, spokenSearch, autoStart])
 
   useEffect(() => {
     const query = destination.trim()
@@ -86,8 +114,8 @@ function WalkingRoute({ onRoute, siriDestination }: GoogleRouteProps) {
 
   const startSiriRoute = useEffectEvent((place: PlaceSuggestion) => {
     setAutoPlace(null)
-    selectPlace(place)
-    void start(place)
+    selectPlace(place, true)
+    void start(place, true)
   })
 
   useEffect(() => {
@@ -97,14 +125,16 @@ function WalkingRoute({ onRoute, siriDestination }: GoogleRouteProps) {
   function editDestination(value: string) {
     setDestination(value)
     setSelected(null)
+    setSelectedFromSiri(false)
     setSuggestions([])
     setSpokenSearch(undefined)
     setAutoPlace(null)
     setSearchStatus(!manual && value.trim().length >= 3 ? 'Searching…' : '')
   }
 
-  function selectPlace(place: PlaceSuggestion) {
+  function selectPlace(place: PlaceSuggestion, fromSiri = Boolean(spokenSearch)) {
     setSelected(place)
+    setSelectedFromSiri(fromSiri)
     setDestination(place.label)
     setSuggestions([])
     setSearchStatus('')
@@ -202,7 +232,7 @@ function WalkingRoute({ onRoute, siriDestination }: GoogleRouteProps) {
     } finally { working.current = false; setBusy(false) }
   }
 
-  async function start(place = selected) {
+  async function start(place = selected, fromSiri = selectedFromSiri) {
     if (working.current || session.current.active) return
     const state = session.current
     const title = place?.label ?? destination.trim()
@@ -228,13 +258,19 @@ function WalkingRoute({ onRoute, siriDestination }: GoogleRouteProps) {
       const result = await controller.setDestinations([waypoint], { routingOptions: { travelMode: TravelMode.WALKING } })
       if (result !== RouteStatus.OK) throw new Error(`Walking route unavailable: ${result}`)
       if (!state.alive) return
+      await controller.setAudioGuidanceSettings({
+        guidanceMode: spokenDirections ? AudioGuidanceMode.VOICE_ALERTS_AND_GUIDANCE : AudioGuidanceMode.SILENT,
+        vibrationEnabled: false,
+        bluetoothAudioEnabled: false,
+      })
+      if (!state.alive) return
       state.active = true
       await controller.startGuidance()
       if (!state.alive || !state.active) return
       setGuiding(true)
       setStatus('')
       try {
-        nativeDepth?.announceRoute?.(place?.label ?? null)
+        if (fromSiri || announceStart) nativeDepth?.announceRoute?.(place?.label ?? null)
       } catch (error) {
         console.warn('Route started, but the announcement could not play.', error)
       }
@@ -277,29 +313,42 @@ function WalkingRoute({ onRoute, siriDestination }: GoogleRouteProps) {
       disabled={busy} onPress={() => void connect()} /> : <>
       {!guiding && <>
       <Text style={styles.label}>Destination</Text>
-      <TextInput accessibilityLabel="Walking destination" placeholder={manual ? 'Latitude, longitude or Place ID' : 'Search a place or address'}
+      <TextInput accessibilityLabel="Walking destination"
+        accessibilityHint={manual ? 'Enter latitude and longitude or a Google Place ID' : 'Type or dictate a place, then swipe to the search results'}
+        placeholder={manual ? 'Latitude, longitude or Place ID' : 'Search a place or address'}
         placeholderTextColor="#aab9c9" value={destination} editable={!guiding && !busy}
         autoCapitalize={manual ? 'none' : 'sentences'} returnKeyType={manual ? 'done' : 'search'}
         onChangeText={editDestination} style={styles.input} />
       {!manual && (suggestions.length > 0 || selected) && <View style={styles.suggestions}>
-        {suggestions.map(place => <Pressable key={place.placeId} accessibilityRole="button" style={styles.suggestion}
-          onPress={() => selectPlace(place)}><Text style={styles.label}>{place.label}</Text></Pressable>)}
+        {suggestions.length > 0 && <Text accessibilityRole="header" style={styles.resultsHeading}>Search results</Text>}
+        {suggestions.map(place => <ActionButton key={place.placeId} label={place.label} disabled={busy}
+          hint="Selects this destination and moves to Start walk" onPress={() => {
+            focusStart.current = true
+            selectPlace(place)
+          }} />)}
         <Text style={styles.attribution}>Google Maps</Text>
       </View>}
       {searchStatus ? <Text accessibilityLiveRegion="polite" style={styles.muted}>{searchStatus}</Text> : null}
       {autoPlace && !locationReady && <Text style={styles.muted}>Waiting for your location…</Text>}
       </>}
-      <ActionButton primary label={guiding ? 'End walk' : 'Start walk'}
-        hint={guiding ? 'Stops navigation to your destination' : 'Starts Google turn-by-turn walking directions to the selected destination'}
+      <ActionButton ref={startButton} primary label={guiding ? 'End walk' : 'Start walk'}
+        hint={guiding ? 'Stops navigation to your destination' : selected ? `Starts walking guidance to ${selected.label}` : 'Starts walking guidance'}
         disabled={busy || (!guiding && (manual ? !destination.trim() : !selected))}
         onPress={() => void (guiding ? stop() : start())} />
     </>}
-    {!guiding && (nativeDepth?.setSiriAutoStart || nativeDepth?.searchPlaces) && <>
-      <Pressable accessibilityRole="button" accessibilityState={{ expanded: showOptions }}
-        style={styles.optionButton} onPress={() => setShowOptions(!showOptions)}>
-        <Text style={styles.optionText}>{showOptions ? 'Hide route options' : 'Route options'}</Text>
-      </Pressable>
+    {!guiding && <>
+      <ActionButton label="Route options" expanded={showOptions} onPress={() => setShowOptions(!showOptions)} />
       {showOptions && <>
+        <View style={styles.siriSetting}>
+          <Text style={[styles.label, styles.settingLabel]}>Spoken walking directions</Text>
+          <Switch accessibilityLabel="Spoken walking directions" value={spokenDirections}
+            disabled={busy} onValueChange={setSpokenDirections} />
+        </View>
+        {nativeDepth?.announceRoute && <View style={styles.siriSetting}>
+          <Text style={[styles.label, styles.settingLabel]}>Announce route start</Text>
+          <Switch accessibilityLabel="Announce route start" value={announceStart}
+            disabled={busy} onValueChange={setAnnounceStart} />
+        </View>}
         {nativeDepth?.setSiriAutoStart && <View style={styles.siriSetting}>
           <Text style={[styles.label, styles.settingLabel]}>Start Siri routes automatically</Text>
           <Switch accessibilityLabel="Start Siri routes automatically" value={autoStart} onValueChange={enabled => {
@@ -317,15 +366,13 @@ function WalkingRoute({ onRoute, siriDestination }: GoogleRouteProps) {
 }
 
 const styles = StyleSheet.create({
-  muted: { color: '#c8d8e2', fontFamily: mono, fontSize: 17 },
-  input: { color: '#f5fafc', fontFamily: mono, fontSize: 18, minHeight: 54, borderWidth: 1, borderColor: '#728795',
-    backgroundColor: '#090b0e', paddingHorizontal: 14, paddingVertical: 12 },
-  suggestions: { borderWidth: 1, borderColor: '#32404c', backgroundColor: '#121a21' },
-  suggestion: { minHeight: 52, justifyContent: 'center', padding: 12, borderBottomWidth: 1, borderColor: '#728795' },
-  label: { color: '#f5fafc', fontFamily: mono, fontSize: 17 },
+  muted: { color: terminal.muted, fontSize: 17 },
+  input: { color: terminal.text, fontSize: 18, minHeight: 56, borderWidth: 1, borderColor: terminal.border,
+    borderRadius: 12, backgroundColor: terminal.background, paddingHorizontal: 14, paddingVertical: 12 },
+  suggestions: { gap: 8 },
+  resultsHeading: { color: terminal.accent, fontSize: 17, fontWeight: '600' },
+  label: { color: terminal.text, fontSize: 17 },
   attribution: { color: '#aab9c9', fontSize: 12, textAlign: 'right', padding: 8 },
-  optionButton: { minHeight: 48, justifyContent: 'center' },
-  optionText: { color: '#a7edff', fontFamily: mono, fontSize: 17, fontWeight: '600' },
   siriSetting: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 8, minHeight: 48 },
   settingLabel: { flex: 1 },
 })

@@ -1,6 +1,6 @@
 import { StyleSheet, Text, View } from 'react-native'
 import type { Route } from '../shared/contracts'
-import { mono } from './terminal'
+import { mono, terminal } from './terminal'
 
 export function RouteCard({ route }: { route: Route | undefined }) {
   if (!route || route.status === 'idle') return null
@@ -16,25 +16,27 @@ export function RouteCard({ route }: { route: Route | undefined }) {
       <Text accessibilityRole="header" style={styles.destination}>{route.destination}</Text>
       {route.maneuver ? <Text style={styles.instruction}>{route.maneuver}</Text> : null}
     </View>
-    {direction && <View style={styles.compass} accessible accessibilityLabel={`Google route direction: ${direction}`}>
+    {direction && <View style={styles.compass} accessible accessibilityLabel={`Route direction: ${direction}`}>
       <View style={styles.dial}>
         <Text accessible={false} style={[styles.arrow, { transform: [{ rotate: `${bearing}deg` }] }]}>↑</Text>
       </View>
+      <Text aria-hidden style={styles.direction}>{direction}</Text>
     </View>}
   </View>
 }
 
 const styles = StyleSheet.create({
   card: { flexDirection: 'row', alignItems: 'center', gap: 10, borderWidth: 1, borderLeftWidth: 3,
-    borderColor: '#456776', backgroundColor: '#101c25', padding: 12 },
+    borderColor: '#456776', borderRadius: 12, backgroundColor: terminal.background, padding: 12 },
   rerouting: { borderColor: '#e5b57e' },
   details: { flex: 1, gap: 4 },
   state: { color: '#a7edff', fontFamily: mono, fontWeight: '700', fontSize: 17 },
   warning: { color: '#e5b57e' },
-  destination: { color: '#edf5fa', fontFamily: mono, fontSize: 24, fontWeight: '700' },
-  instruction: { color: '#c8d8e2', fontFamily: mono, fontSize: 19 },
+  destination: { color: terminal.text, fontSize: 24, fontWeight: '700' },
+  instruction: { color: terminal.muted, fontSize: 19 },
   compass: { alignItems: 'center', gap: 4 },
   dial: { alignItems: 'center', justifyContent: 'center', width: 42, height: 42,
     borderWidth: 1, borderColor: '#456776', borderRadius: 21 },
   arrow: { color: '#9dd9e8', fontSize: 25, lineHeight: 31, textAlign: 'center' },
+  direction: { color: terminal.muted, fontSize: 15 },
 })

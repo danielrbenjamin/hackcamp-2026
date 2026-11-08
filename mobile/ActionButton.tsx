@@ -1,29 +1,35 @@
+import type { ComponentRef, Ref } from 'react'
 import { Pressable, StyleSheet, Text } from 'react-native'
-import { mono } from './terminal'
+import { terminal } from './terminal'
 
-export function ActionButton({ label, onPress, selected, disabled, primary, hint }: {
+export function ActionButton({ label, onPress, selected, disabled, primary, hint, expanded, ref }: {
   label: string
   onPress: () => void
   selected?: boolean
   disabled?: boolean
   primary?: boolean
   hint?: string
+  expanded?: boolean
+  ref?: Ref<ComponentRef<typeof Pressable>>
 }) {
-  return <Pressable accessibilityRole="button" accessibilityHint={hint}
-    accessibilityState={{ selected, disabled }} disabled={disabled} onPress={onPress}
+  return <Pressable ref={ref} accessibilityRole="button" accessibilityLabel={label} accessibilityHint={hint}
+    accessibilityState={{ selected, disabled, expanded }} disabled={disabled} onPress={onPress}
     style={({ pressed }) => [styles.button, selected && styles.selected, primary && styles.primary,
       disabled && styles.disabled, pressed && styles.pressed]}>
     <Text style={[styles.label, primary && !disabled && styles.primaryLabel]}>{label}</Text>
+    {expanded !== undefined && <Text aria-hidden style={styles.marker}>{expanded ? '−' : '+'}</Text>}
   </Pressable>
 }
 
 const styles = StyleSheet.create({
-  button: { minHeight: 52, paddingHorizontal: 16, paddingVertical: 12, justifyContent: 'center',
-    borderWidth: 1, borderColor: '#728795', backgroundColor: '#101820' },
-  selected: { borderColor: '#a7edff', backgroundColor: '#243e4d' },
-  primary: { borderColor: '#a7edff', backgroundColor: '#a7edff' },
-  disabled: { borderColor: '#728795', backgroundColor: '#26323b' },
-  pressed: { opacity: 0.8 },
-  label: { color: '#f5fafc', fontFamily: mono, fontSize: 17, fontWeight: '600', textAlign: 'center' },
-  primaryLabel: { color: '#0a202a' },
+  button: { minHeight: 56, paddingHorizontal: 16, paddingVertical: 12, flexDirection: 'row',
+    alignItems: 'center', gap: 12, borderWidth: 1, borderRadius: 12, borderColor: terminal.border,
+    backgroundColor: terminal.control },
+  selected: { borderColor: terminal.accent, backgroundColor: '#244353' },
+  primary: { borderColor: terminal.accent, backgroundColor: terminal.accent },
+  disabled: { borderColor: '#526475', backgroundColor: '#24303a' },
+  pressed: { opacity: 0.82 },
+  label: { flexShrink: 1, flexGrow: 1, color: terminal.text, fontSize: 18, fontWeight: '600' },
+  primaryLabel: { color: terminal.accentText, fontWeight: '700' },
+  marker: { color: terminal.accent, fontSize: 22 },
 })
