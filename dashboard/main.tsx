@@ -171,7 +171,7 @@ function Dashboard() {
             <button aria-pressed={mapView === 'depth'} onClick={() => setMapView('depth')}>Depth & confidence</button>
           </div>
           <div className="viewport">
-            {mapView === 'depth' ? <DepthImages preview={observation?.depthPreview} />
+            {mapView === 'depth' ? <DepthImages observation={observation} />
               : !grid || !observation ? <p className="waiting">{link || 'Waiting for depth data'}</p>
               : mapView === 'cloud' ? <PointCloud points={observation.source === 'simulated' ? simulatedPoints(grid) : observation.points}
                 heading={heading} hazards={detections} phone={observation.source === 'arkit'}

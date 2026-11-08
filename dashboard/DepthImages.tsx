@@ -1,9 +1,10 @@
 import { useEffect, useRef } from 'react'
-import type { DepthPreview } from '../shared/contracts'
+import type { Observation } from '../shared/contracts'
 
 const confidenceColors = [[236, 99, 85], [242, 192, 93], [76, 198, 178]]
 
-export function DepthImages({ preview }: { preview?: DepthPreview }) {
+export function DepthImages({ observation }: { observation?: Observation }) {
+  const preview = observation?.depthPreview
   const depth = useRef<HTMLCanvasElement>(null)
   const confidence = useRef<HTMLCanvasElement>(null)
   useEffect(() => {
@@ -25,7 +26,13 @@ export function DepthImages({ preview }: { preview?: DepthPreview }) {
     confidenceContext.putImageData(quality, 0, 0)
   }, [preview])
 
-  if (!preview) return <p className="waiting">Enable 3D scan sharing on an iPhone with the updated build.</p>
+  if (!preview) {
+    const message = observation?.source !== 'arkit' ? 'Waiting for live iPhone LiDAR telemetry.'
+      : observation.points === undefined ? 'Turn on Share 3D scan with dashboard in Lantern.'
+      : observation.points.length === 0 ? 'Scan sharing is on. Waiting for usable LiDAR returns.'
+      : 'The iPhone is sending 3D points but no depth or confidence image. Check the installed iOS build and reload Lantern from the latest Expo checkout.'
+    return <p className="waiting">{message}</p>
+  }
   return <div className="depth-images">
     <figure>
       <figcaption>Distance <span>{preview.width} × {preview.height}</span></figcaption>
