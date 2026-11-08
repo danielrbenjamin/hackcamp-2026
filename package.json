@@ -13,7 +13,11 @@
     "dashboard": "vite --config dashboard/vite.config.ts",
     "build:dashboard": "vite build --config dashboard/vite.config.ts",
     "typecheck": "tsc --noEmit",
-    "test": "node --disable-warning=ExperimentalWarning --test shared/*.test.ts plugins/*.test.cjs"
+    "test": "node --disable-warning=ExperimentalWarning --test shared/*.test.ts plugins/*.test.cjs scripts/*.test.mjs",
+    "lakehouse:setup": "node scripts/lakehouse.mjs setup",
+    "lakehouse:test": "node --disable-warning=ExperimentalWarning --test shared/walkUploads.test.ts scripts/lakehouse.test.mjs",
+    "lakehouse:check": "node scripts/lakehouse.mjs check",
+    "lakehouse:start": "node scripts/lakehouse.mjs start"
   },
   "dependencies": {
     "@expo/metro-runtime": "~58.0.17",

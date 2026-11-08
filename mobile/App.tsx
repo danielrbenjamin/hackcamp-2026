@@ -13,9 +13,13 @@ import { ActionButton as Control } from './ActionButton'
 import { SettingSwitch } from './SettingSwitch'
 import { mono, terminal } from './terminal'
 import { createRecording, telemetrySummary } from './session'
+import { walkUploads } from './walkUploads'
+import type { UploadState } from '../shared/walkUploads'
 
 const telemetryUrl = process.env.EXPO_PUBLIC_TELEMETRY_URL
 const telemetryToken = process.env.EXPO_PUBLIC_TELEMETRY_TOKEN
+const uploadUrl = process.env.EXPO_PUBLIC_ML_UPLOAD_URL
+const uploadToken = process.env.EXPO_PUBLIC_ML_UPLOAD_TOKEN
 const disconnected: BeltStatus = { connected: false, battery: null, source: 'ble' }
 const beltDirections = ['Turn farther left', 'Veer left', 'Go straight', 'Veer right', 'Turn farther right']
 const scenarioChoices = Object.keys(scenarios) as Scenario[]
@@ -63,6 +67,8 @@ export default function App() {
   const [walkCount, setWalkCount] = useState(0)
   const [walkURI, setWalkURI] = useState('')
   const [walkStatus, setWalkStatus] = useState('')
+  const [uploadState, setUploadState] = useState<UploadState>({ enabled: false, pending: 0, uploading: false, message: '' })
+  const [uploader] = useState(() => walkUploads(uploadUrl, uploadToken, setUploadState))
   const [streaming, setStreaming] = useState(false)
   const [sharePoints, setSharePoints] = useState(false)
   const [previewModels, setPreviewModels] = useState(true)
@@ -83,6 +89,15 @@ export default function App() {
     setRouteActive(active)
     if (active) setScreen(current => current === 'route' || current === 'siri' ? 'home' : current)
   }, [])
+
+  useEffect(() => {
+    if (Platform.OS !== 'ios' || !nativeDepth?.finishWalkRecording) return
+    try { uploader.start() } catch { setWalkStatus('Could not open the saved upload queue.') }
+    const retry = () => { void uploader.retry() }
+    const timer = setInterval(() => { if (AppState.currentState === 'active') retry() }, 30_000)
+    const listener = AppState.addEventListener('change', state => { if (state === 'active') retry() })
+    return () => { clearInterval(timer); listener.remove(); uploader.stop() }
+  }, [uploader])
 
   useEffect(() => {
     if (previousScreen.current === screen) return
@@ -303,7 +318,11 @@ export default function App() {
     setWalkStatus('')
     if (walkState === 'recording') {
       setWalkState('finishing')
-      try { setWalkURI(await nativeDepth.finishWalkRecording()) }
+      try {
+        const uri = await nativeDepth.finishWalkRecording()
+        setWalkURI(uri)
+        await uploader.enqueue(uri)
+      }
       catch (error) { setWalkStatus(String(error)) }
       finally { setWalkState('idle') }
     } else {
@@ -567,6 +586,15 @@ export default function App() {
         {nativeDepth?.startWalkRecording && (native || walkState !== 'idle' || !!walkURI) && <>
           <Text accessibilityRole="header" style={styles.kicker}>ML recording</Text>
           <Text style={styles.muted}>Saves camera images, depth, pose, and model results on this iPhone. Share only walks you have consent to collect. Up to 120 frames.</Text>
+          <SettingSwitch label="Upload ML recordings automatically"
+            hint="Opt in to send recorded camera images, depth and model results to Lantern's Databricks storage. Failed uploads stay on this iPhone for retry."
+            value={uploadState.enabled} onChange={value => {
+              if (value && (!uploadUrl || !uploadToken)) { setWalkStatus('An HTTPS ML upload server must be configured first.'); return }
+              try { uploader.setEnabled(value) } catch { setWalkStatus('Could not save the upload setting.') }
+            }} />
+          <Text style={styles.muted}>{uploadState.pending} ML uploads pending. {uploadState.message}</Text>
+          {uploadState.enabled && uploadState.pending > 0 && <Control label="Retry ML uploads" disabled={uploadState.uploading}
+            onPress={() => { void uploader.retry() }} />}
           <Control label={walkState === 'recording' ? 'Stop ML recording' : walkState === 'finishing' ? 'Preparing export…' : 'Start ML recording'}
             disabled={walkState !== 'recording' && (walkState !== 'idle' || status !== 'running' || !native)}
             onPress={() => { void toggleWalkRecording() }} />
