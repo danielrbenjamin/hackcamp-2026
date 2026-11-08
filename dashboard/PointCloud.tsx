@@ -296,7 +296,7 @@ export function PointCloud({ points, pointColors, heading, hazards, phone, color
         })}
         {showCameraOverlay && cameraOverlay && <svg x={imageX} y={imageY} width={imageWidth} height={imageHeight}
           viewBox="0 0 96 96" preserveAspectRatio="none">
-          <g transform={`rotate(${rotation} 48 48)`}>{cameraOverlay.content}</g>
+          {cameraOverlay.content}
           {cameraOverlay.upright}
         </svg>}
         {showCameraOverlay && denseScan && people?.length ? <defs><clipPath id={trailClip}>

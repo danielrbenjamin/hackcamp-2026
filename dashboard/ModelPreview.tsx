@@ -56,7 +56,11 @@ function PersonBoxes({ people, width, height, rotation = 0 }: {
   </svg>
 }
 
-function ScanMasks({ masks }: { masks: Preview['masks'] }) {
+function ScanMasks({ masks, rotation, stairsRotation = rotation }: {
+  masks: Preview['masks']
+  rotation: ReturnType<typeof scanDisplayRotation>
+  stairsRotation?: ReturnType<typeof scanDisplayRotation>
+}) {
   const layers = useMemo(() => masks.flatMap(mask => {
     const labels = atob(mask.labels)
     const paths = ['', '', '']
@@ -78,13 +82,14 @@ function ScanMasks({ masks }: { masks: Preview['masks'] }) {
       }
     }
     return paths.slice(1).map((path, index) => ({
-      key: `${mask.kind}-${index}`, path, edge: edges[index + 1], size: mask.size,
+      key: `${mask.kind}-${index}`, kind: mask.kind, path, edge: edges[index + 1], size: mask.size,
       color: mask.kind === 'glass' ? glass : index === 0 ? riser : tread,
     }))
   }), [masks])
-  return layers.filter(layer => layer.path).map(({ key, path, edge, size, color }) => {
+  return layers.filter(layer => layer.path).map(({ key, kind, path, edge, size, color }) => {
     const tint = `rgb(${color.join(',')})`
-    return <g key={key} transform={`scale(${96 / size})`}>
+    const angle = kind === 'glass' ? rotation : stairsRotation
+    return <g key={key} transform={`rotate(${angle} 48 48) scale(${96 / size})`}>
       <path d={path} fill={tint} fillOpacity={0.4} />
       <path d={edge} fill="none" stroke={tint} strokeWidth="1.4" vectorEffect="non-scaling-stroke" />
     </g>
@@ -150,7 +155,7 @@ export const ModelPreview = memo(function ModelPreview({ preview, view, mutedDep
         people={preview.people} imageAspect={scene.depth ? scene.depth.width / scene.depth.height : undefined} heading={null} phone
         cameraOverlay={alignedScan ? {
           coordinates: preview.scan?.imageCoordinates,
-          content: <ScanMasks masks={preview.masks} />,
+          content: <ScanMasks masks={preview.masks} rotation={boxRotation} />,
           upright: <svg width={96} height={96}>
             <PersonBoxes people={preview.people} width={sideways ? height : width} height={sideways ? width : height} rotation={boxRotation} />
           </svg>,
@@ -172,7 +177,7 @@ export const ModelPreview = memo(function ModelPreview({ preview, view, mutedDep
         <div className="model-scene" style={{ aspectRatio: width / height }}>
           {pixels && <DepthRaster pixels={pixels} />}
           <svg viewBox="0 0 96 96" preserveAspectRatio="none" role="img" aria-label="Glass and stair segmentation masks">
-            <ScanMasks masks={preview.masks} />
+            <ScanMasks masks={preview.masks} rotation={boxRotation} stairsRotation={0} />
           </svg>
           <PersonBoxes people={preview.people} width={width} height={height} rotation={boxRotation} />
         </div>
@@ -187,7 +192,7 @@ export const ModelPreview = memo(function ModelPreview({ preview, view, mutedDep
           <div className="model-scene" style={{ aspectRatio: width / height }}>
             {pixels && <DepthRaster pixels={pixels} />}
             {mask && <svg viewBox="0 0 96 96" preserveAspectRatio="none" role="img" aria-label={`${kind} segmentation mask`}>
-              <ScanMasks masks={[mask]} />
+              <ScanMasks masks={[mask]} rotation={boxRotation} stairsRotation={0} />
             </svg>}
           </div>
           <span>{preview.models[kind]}</span>
