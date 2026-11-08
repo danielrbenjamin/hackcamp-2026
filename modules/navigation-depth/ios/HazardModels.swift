@@ -22,6 +22,15 @@ private enum ImageRotation {
 
   var swapsAxes: Bool { self == .clockwise || self == .counterclockwise }
 
+  var degrees: Int {
+    switch self {
+    case .none: return 0
+    case .clockwise: return 90
+    case .counterclockwise: return -90
+    case .upsideDown: return 180
+    }
+  }
+
   var visionOrientation: CGImagePropertyOrientation {
     switch self {
     case .none: return .up
@@ -187,15 +196,22 @@ final class HazardModels {
     var masks: [[String: Any]] = []
     var people: [[String: Any]] = []
     var versions: [String: String] = [:]
+    var stageMs = ["scan": (ProcessInfo.processInfo.systemUptime - started) * 1_000]
+    func measure<T>(_ stage: String, _ work: () throws -> T) rethrows -> T {
+      let start = ProcessInfo.processInfo.systemUptime
+      defer { stageMs[stage] = (ProcessInfo.processInfo.systemUptime - start) * 1_000 }
+      return try work()
+    }
     func snapshot(partial: Bool) -> [String: Any] {
       ["timeMs": timeMs, "latencyMs": (ProcessInfo.processInfo.systemUptime - started) * 1_000,
+       "rotationDegrees": rotation.degrees, "stageMs": stageMs,
        "models": status, "masks": masks, "people": people, "partial": partial, "versions": versions]
     }
     if let error = unavailable["person"] { status["person"] = error }
     else {
       do {
         progress("Running person model")
-        people = try detectPeople(frame, depth: depth, session: session, rotation: rotation)
+        people = try measure("person") { try detectPeople(frame, depth: depth, session: session, rotation: rotation) }
         versions["person"] = version("PersonDetection")
         status["person"] = "Preview"
       } catch {
@@ -211,16 +227,20 @@ final class HazardModels {
         progress("Loading \(kind) model")
         let loaded = try model(name)
         progress("Running \(kind) model")
-        let stairDepth = kind == "stairs" ? depth.stairDepths(using: frame.smoothedSceneDepth.flatMap(DepthSamples.init)) : nil
-        let input = try tensor(frame.capturedImage, depth: depth, size: size, channels: channels,
-                               stairDepth: stairDepth?.values, rotation: rotation)
-        let features = try MLDictionaryFeatureProvider(dictionary: ["rgbd": MLFeatureValue(multiArray: input)])
-        let prediction = try loaded.prediction(from: features)
+        let (features, stairDepth) = try measure(kind + "Input") {
+          let stairDepth = kind == "stairs" ? depth.stairDepths(using: frame.smoothedSceneDepth.flatMap(DepthSamples.init)) : nil
+          let input = try tensor(frame.capturedImage, depth: depth, size: size, channels: channels,
+                                 stairDepth: stairDepth?.values, rotation: rotation)
+          return (try MLDictionaryFeatureProvider(dictionary: ["rgbd": MLFeatureValue(multiArray: input)]), stairDepth)
+        }
+        let prediction = try measure(kind + "Inference") { try loaded.prediction(from: features) }
         guard let output = prediction.featureValue(for: "logits")?.multiArrayValue,
               output.shape.map(\.intValue) == [1, kind == "glass" ? 1 : 3, size, size] else {
           throw ModelError.incompatible
         }
-        masks.append(mask(output, kind: kind, size: size, depth: depth, camera: frame.camera, rotation: rotation))
+        masks.append(measure(kind + "Mask") {
+          mask(output, kind: kind, size: size, depth: depth, camera: frame.camera, rotation: rotation)
+        })
         versions[kind] = version(name)
         if let stairDepth {
           let total = Double(depth.width * depth.height)
@@ -310,7 +330,6 @@ final class HazardModels {
     let pointStep = (previewSize + 23) / 24
     let fit = kind == "stairs" ? rotation.fit(width: Int(camera.imageResolution.width), height: Int(camera.imageResolution.height))
       : SIMD2<Float>(repeating: 1)
-    let center = SIMD2<Float>(repeating: 0.5)
     var labels = Data()
     labels.reserveCapacity(previewSize * previewSize)
     var points: [[Float]] = []
@@ -323,15 +342,27 @@ final class HazardModels {
       if let floats { return floats[channel * strides[1] + row * strides[2] + col * strides[3]] }
       return output[[0, NSNumber(value: channel), NSNumber(value: row), NSNumber(value: col)]].floatValue
     }
+    func sampleCenter(_ index: Int) -> Float { (Float(index) + 0.5) / Float(previewSize) }
+    func modelIndex(_ value: Float, scale: Float) -> Int {
+      Int(((value - 0.5) * scale + 0.5) * Float(size))
+    }
+    // A quarter turn only swaps or reverses axes. Compute each index once per axis.
+    let modelColumns = (0..<previewSize).map { index in
+      let axis = rotation.swapsAxes ? SIMD2(0.5, sampleCenter(index)) : SIMD2(sampleCenter(index), 0.5)
+      return modelIndex(rotation.upright(axis).x, scale: fit.x)
+    }
+    let modelRows = (0..<previewSize).map { index in
+      let axis = rotation.swapsAxes ? SIMD2(sampleCenter(index), 0.5) : SIMD2(0.5, sampleCenter(index))
+      return modelIndex(rotation.upright(axis).y, scale: fit.y)
+    }
     // Publish masks in sensor coordinates so overlays and depth projection use the same pixels.
     for y in 0..<previewSize {
       let v = (Float(y) + 0.5) / Float(previewSize)
       for x in 0..<previewSize {
         let u = (Float(x) + 0.5) / Float(previewSize)
         let uv = SIMD2(u, v)
-        let modelUV = (rotation.upright(uv) - center) * fit + center
-        let row = Int(modelUV.y * Float(size))
-        let col = Int(modelUV.x * Float(size))
+        let row = modelRows[rotation.swapsAxes ? x : y]
+        let col = modelColumns[rotation.swapsAxes ? y : x]
         let first = logit(0, row, col)
         var label: UInt8 = 0
         var confidence: Float = 0

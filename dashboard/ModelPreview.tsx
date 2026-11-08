@@ -10,6 +10,17 @@ const riser = [248, 166, 96]
 const tread = [251, 215, 123]
 const personColor = 'var(--model-person)'
 const depthColors = distancePalette(300)
+const timingLabels = {
+  scan: 'Scan prep', person: 'People', glassInput: 'Glass input', glassInference: 'Glass model',
+  glassMask: 'Glass mask', stairsInput: 'Stairs input', stairsInference: 'Stairs model', stairsMask: 'Stairs mask',
+} as const
+
+function stageTimings(preview: Preview) {
+  return (Object.keys(timingLabels) as (keyof typeof timingLabels)[]).flatMap(key => {
+    const ms = preview.stageMs?.[key]
+    return typeof ms === 'number' && Number.isFinite(ms) ? [`${timingLabels[key]} ${Math.round(ms)} ms`] : []
+  }).join(' · ')
+}
 const mutedDepthColors = depthColors.map((_, cm) => {
   const light = cm > 0 ? 0.2 + 0.8 * Math.max(0, 1 - cm / 300) : 0
   return [10 + light * 47, 16 + light * 77, 24 + light * 99, 255]
@@ -132,6 +143,8 @@ export const ModelPreview = memo(function ModelPreview({ preview, completed, vie
   const displayHeight = sideways ? width : height
   const alignedScan = !!preview.denseScan || !!preview.scan?.imageCoordinates
   const unlocated = preview.people.filter(person => !person.position || person.position[2] < 0.08).length
+  const timings = stageTimings(preview)
+  const fullTimings = completed && stageTimings(completed)
   return <>
     <div className="model-preview-toolbar">
       {view !== 'scan' && depth && <div className="scan-modes" role="group" aria-label="Depth palette">
@@ -139,8 +152,16 @@ export const ModelPreview = memo(function ModelPreview({ preview, completed, vie
         <button aria-pressed={mutedDepth} onClick={() => setMutedDepth(true)}>Muted blue</button>
       </div>}
       {bearing && <span>Glass bearing {bearing.left.toFixed(0)}° to {bearing.right.toFixed(0)}°</span>}
+      {preview.rotationDegrees !== undefined && <span>
+        Model rotation {preview.rotationDegrees}°{matchingScan && preview.rotationDegrees !== rotation ? ` · Display rotation ${rotation}°` : ''}
+      </span>}
       <span className="model-latency">{Math.round(preview.latencyMs)} ms{preview.partial ? ' · Partial results' : ''}
         {completed && ` · Last full frame ${Math.round(completed.latencyMs)} ms`}</span>
+      {timings && <details>
+        <summary>Timings</summary>
+        <div>{timings}</div>
+        {fullTimings && <div>Last full frame · {fullTimings}</div>}
+      </details>}
     </div>
     {view === 'scan' ? (preview.scan || preview.denseScan) ? <>
       <PointCloud points={preview.scan?.points} pointColors={preview.scan?.pointColors} denseScan={preview.denseScan} overlayPoints={overlays}

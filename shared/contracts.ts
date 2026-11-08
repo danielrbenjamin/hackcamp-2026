@@ -29,6 +29,9 @@ export interface DepthPreview {
 export interface ModelPreview {
   timeMs: number
   latencyMs: number
+  rotationDegrees?: 0 | 90 | -90 | 180
+  stageMs?: Partial<Record<'scan' | 'person' | 'glassInput' | 'glassInference' | 'glassMask' |
+    'stairsInput' | 'stairsInference' | 'stairsMask', number>>
   partial?: boolean
   depthPreview?: DepthPreview
   scan?: { points: readonly DepthPoint[]; pointColors?: string; imageCoordinates?: string }
