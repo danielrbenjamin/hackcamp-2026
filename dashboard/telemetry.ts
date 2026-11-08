@@ -1,6 +1,6 @@
 import type { Plugin } from 'vite'
-import { MAX_DEPTH_POINTS, MAX_DEPTH_PREVIEW_DIMENSION, MAX_SCAN_PIXELS, type DenseScan, type DepthPreview } from '../shared/contracts'
-import { validHazards } from '../shared/hazards'
+import { MAX_DEPTH_POINTS, MAX_DEPTH_PREVIEW_DIMENSION, MAX_SCAN_PIXELS, type DenseScan, type DepthPreview } from '../shared/contracts.ts'
+import { validHazards } from '../shared/hazards.ts'
 function validDenseScan(value: unknown) {
   if (value === undefined) return true
   if (!value || typeof value !== 'object') return false
@@ -28,7 +28,7 @@ function validPreview(preview: unknown) {
     /^[A-Za-z0-9+/]+={0,2}$/.test(samples) && Buffer.from(samples, 'base64').length === bytes
 }
 
-function validModelPreview(preview: unknown) {
+export function validModelPreview(preview: unknown) {
   if (preview === undefined) return true
   if (!preview || typeof preview !== 'object') return false
   const { timeMs, latencyMs, models, masks, people, depthPreview, partial, scan, denseScan } = preview as import('../shared/contracts').ModelPreview
@@ -48,8 +48,10 @@ function validModelPreview(preview: unknown) {
     !!models && ['glass', 'stairs', 'person'].every(kind => typeof models[kind as keyof typeof models] === 'string' &&
       models[kind as keyof typeof models].length <= 180) &&
     Array.isArray(masks) && masks.length <= 2 && masks.every(mask => mask && ['glass', 'stairs'].includes(mask.kind) &&
-      mask.size === 96 && typeof mask.labels === 'string' && mask.labels.length === 12_288 &&
-      /^[A-Za-z0-9+/]+$/.test(mask.labels) && Array.isArray(mask.points) &&
+      [96, 224, 384].includes(mask.size) && typeof mask.labels === 'string' &&
+      mask.labels.length === 4 * Math.ceil(mask.size * mask.size / 3) &&
+      /^[A-Za-z0-9+/]+={0,2}$/.test(mask.labels) &&
+      Buffer.from(mask.labels, 'base64').length === mask.size * mask.size && Array.isArray(mask.points) &&
       mask.points.length <= 576 && mask.points.every(point)) &&
     Array.isArray(people) && people.length <= 16 && people.every(person => person &&
       Array.isArray(person.box) && person.box.length === 4 &&

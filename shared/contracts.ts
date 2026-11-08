@@ -34,6 +34,8 @@ export interface ModelPreview {
   scan?: { points: readonly DepthPoint[]; pointColors?: string; imageCoordinates?: string }
   denseScan?: DenseScan
   models: Record<'glass' | 'stairs' | 'person', string>
+  // Row-major labels in unrotated captured-image UV coordinates, unpadded by iOS.
+  // points is retained for older clients; new clients color denseScan directly.
   masks: { kind: 'glass' | 'stairs'; size: number; labels: string; points: readonly DepthPoint[] }[]
   people: { box: readonly [number, number, number, number]; confidence: number; position?: DepthPoint; predictedPosition?: DepthPoint }[]
 }

@@ -1,21 +1,29 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ModelPreview as Preview } from '../shared/contracts'
 import { PointCloud } from './PointCloud'
+import { glassBearing } from './modelColors'
 
 const glass = [84, 203, 237]
 const riser = [248, 166, 96]
 const tread = [251, 215, 123]
 const personColor = 'var(--model-person)'
 
-function SceneImage({ depth }: { depth: NonNullable<Preview['depthPreview']> }) {
+function SceneImage({ depth, scan, rgb }: { depth?: Preview['depthPreview']; scan?: Preview['denseScan']; rgb: boolean }) {
   const canvas = useRef<HTMLCanvasElement>(null)
-  const { width, height } = depth
+  const color = rgb && scan?.cameraColor ? scan : undefined
+  const width = color?.width ?? depth?.width ?? 128
+  const height = color?.height ?? depth?.height ?? 96
   useEffect(() => {
     const context = canvas.current?.getContext('2d')
     if (!context) return
     const pixels = context.createImageData(width, height)
-    const samples = atob(depth.samples)
+    const samples = atob(color?.samples ?? depth?.samples ?? '')
     for (let i = 0; i < width * height; i++) {
+      if (color) {
+        for (let c = 0; c < 3; c++) pixels.data[i * 4 + c] = samples.charCodeAt(i * 8 + 4 + c)
+        pixels.data[i * 4 + 3] = 255
+        continue
+      }
       const cm = (samples.charCodeAt(i * 2) | (samples.charCodeAt(i * 2 + 1) << 8)) & 0x3fff
       const light = cm > 0 ? 0.2 + 0.8 * Math.max(0, 1 - cm / 300) : 0
       pixels.data[i * 4] = 10 + light * 47
@@ -24,8 +32,8 @@ function SceneImage({ depth }: { depth: NonNullable<Preview['depthPreview']> }) 
       pixels.data[i * 4 + 3] = 255
     }
     context.putImageData(pixels, 0, 0)
-  }, [depth, width, height])
-  return <canvas ref={canvas} width={width} height={height} role="img" aria-label="Depth image from the model frame" />
+  }, [depth, color, width, height])
+  return <canvas ref={canvas} width={width} height={height} role="img" aria-label={color ? 'Camera RGB from the model frame, including pixels with missing depth' : 'Depth image from the model frame'} />
 }
 
 function PersonBoxes({ people, width, height }: { people: Preview['people']; width: number; height: number }) {
@@ -92,17 +100,15 @@ function ModelKey({ kind }: { kind?: 'glass' | 'stairs' | 'person' }) {
 }
 
 export function ModelPreview({ preview }: { preview?: Preview }) {
-  const [view, setView] = useState<'separate' | 'combined' | 'scan'>('combined')
-  const overlays = useMemo(() => preview?.masks.flatMap(mask => {
-      const [red, green, blue] = mask.kind === 'glass' ? glass : riser
-      return mask.points.map(point => ({ point, rgb: (red << 16) | (green << 8) | blue }))
-    }) ?? [], [preview])
+  const [view, setView] = useState<'separate' | 'combined' | 'scan'>('scan')
+  const [background, setBackground] = useState<'rgb' | 'depth' | 'mask'>('rgb')
   if (!preview) return <p className="waiting">On iPhone, enable Preview hazard models and Share 3D scan with dashboard.</p>
 
   const depth = preview.depthPreview
   const width = depth?.width ?? preview.denseScan?.width ?? 128
   const height = depth?.height ?? preview.denseScan?.height ?? 96
   const alignedScan = !!preview.denseScan || !!preview.scan?.imageCoordinates
+  const bearing = preview.denseScan?.timeMs === preview.timeMs ? glassBearing(preview.denseScan, preview.masks) : undefined
   const unlocated = preview.people.filter(person => !person.position || person.position[2] < 0.08).length
   return <>
     <div className="model-preview-toolbar">
@@ -113,28 +119,36 @@ export function ModelPreview({ preview }: { preview?: Preview }) {
       </div>
       <span className="model-latency">{Math.round(preview.latencyMs)} ms · {preview.partial ? 'Partial preview' : 'Preview only'}</span>
     </div>
+    {bearing && <p role="status">Possible glass: {bearing.left.toFixed(0)}° to {bearing.right.toFixed(0)}° relative to camera heading (negative = left). Distance unknown.</p>}
+    {view !== 'scan' && <div className="scan-modes" role="group" aria-label="Mask background">
+      <button aria-pressed={background === 'rgb'} disabled={!preview.denseScan?.cameraColor} onClick={() => setBackground('rgb')}>Camera RGB</button>
+      <button aria-pressed={background === 'depth'} onClick={() => setBackground('depth')}>Depth</button>
+      <button aria-pressed={background === 'mask'} onClick={() => setBackground('mask')}>Mask only</button>
+    </div>}
     {view === 'scan' ? (preview.scan || preview.denseScan) ? <>
-      <PointCloud points={preview.scan?.points} pointColors={preview.scan?.pointColors} denseScan={preview.denseScan} overlayPoints={overlays}
+      <PointCloud points={preview.scan?.points} pointColors={preview.scan?.pointColors} denseScan={preview.denseScan}
+        modelMasks={preview.denseScan?.timeMs === preview.timeMs ? preview.masks : undefined}
         people={preview.people} imageAspect={depth ? width / height : undefined} heading={null} phone
         cameraOverlay={alignedScan ? {
           coordinates: preview.scan?.imageCoordinates,
-          content: <><ScanMasks masks={preview.masks} /><svg width={96} height={96}>
+          content: <>{!preview.denseScan && <ScanMasks masks={preview.masks} />}<svg width={96} height={96}>
             <PersonBoxes people={preview.people} width={width} height={height} />
           </svg></>,
         } : undefined}
         colorLabel={(preview.denseScan?.cameraColor || preview.scan?.pointColors) ? 'Camera color with model detections' : 'Height colors with model detections'} />
       <div className="legend">
         <ModelKey />
-        {alignedScan && <span>Front shows masks and boxes. Orbit shows depth-projected returns.</span>}
+        {alignedScan && <span>Colors label measured depth returns. Person boxes are 2D detections.</span>}
+        {preview.masks.some(mask => mask.kind === 'glass') && <span>Glass labels do not establish glass distance; LiDAR may return the surface behind it.</span>}
         {!alignedScan && <span>Rebuild Lantern for aligned masks and boxes in Front view.</span>}
         {unlocated > 0 && <span>{unlocated} person {unlocated === 1 ? 'box is' : 'boxes are'} available only in 2D.</span>}
       </div>
     </> : <p className="waiting">No 3D scan arrived with this model frame. Check scan sharing and the installed iPhone build.</p>
       : view === 'combined' ? <div className="model-images model-combined">
       <figure>
-        <figcaption>{depth ? 'Depth with detections' : 'Detections'}<span>{preview.people.length} {preview.people.length === 1 ? 'person' : 'people'}</span></figcaption>
+        <figcaption>{background === 'mask' ? 'Segmentation labels' : background === 'rgb' && preview.denseScan?.cameraColor ? 'Camera RGB with detections' : depth ? 'Depth with detections' : 'Detections'}<span>{preview.people.length} {preview.people.length === 1 ? 'person' : 'people'}</span></figcaption>
         <div className="model-scene" style={{ aspectRatio: width / height }}>
-          {depth && <SceneImage depth={depth} />}
+          {background !== 'mask' && <SceneImage depth={depth} scan={preview.denseScan} rgb={background === 'rgb'} />}
           <svg viewBox="0 0 96 96" preserveAspectRatio="none" role="img" aria-label="Glass and stair segmentation masks"><ScanMasks masks={preview.masks} /></svg>
           <PersonBoxes people={preview.people} width={width} height={height} />
         </div>
@@ -143,11 +157,13 @@ export function ModelPreview({ preview }: { preview?: Preview }) {
     </div> : <div className="model-images">
       {(['glass', 'stairs'] as const).map(kind => {
         const mask = preview.masks.find(item => item.kind === kind)
-        const hasDetection = mask && /[^\x00]/.test(atob(mask.labels))
+        const labels = mask ? atob(mask.labels) : ''
+        const detected = Array.from(labels).filter(label => label.charCodeAt(0) > 0).length
+        const coverage = labels.length ? 100 * detected / labels.length : 0
         return <figure key={kind}>
-          <figcaption>{kind === 'glass' ? 'Glass' : 'Stairs'}<span>{mask ? hasDetection ? 'Detected' : 'No detection' : 'No mask'}</span></figcaption>
+          <figcaption>{kind === 'glass' ? 'Glass' : 'Stairs'}<span>{mask ? detected ? `${coverage.toFixed(1)}% of image labelled` : 'Model predicted background only' : 'No mask received'}</span></figcaption>
           <div className="model-scene" style={{ aspectRatio: width / height }}>
-            {depth && <SceneImage depth={depth} />}
+            {background !== 'mask' && <SceneImage depth={depth} scan={preview.denseScan} rgb={background === 'rgb'} />}
             {mask && <svg viewBox="0 0 96 96" preserveAspectRatio="none" role="img" aria-label={`${kind} segmentation mask`}><ScanMasks masks={[mask]} /></svg>}
           </div>
           <span>{preview.models[kind]}</span>
@@ -157,7 +173,7 @@ export function ModelPreview({ preview }: { preview?: Preview }) {
       <figure>
         <figcaption>People<span>{preview.people.length} detected</span></figcaption>
         <div className="model-scene" style={{ aspectRatio: width / height }}>
-        {depth && <SceneImage depth={depth} />}
+        {background !== 'mask' && <SceneImage depth={depth} scan={preview.denseScan} rgb={background === 'rgb'} />}
         <PersonBoxes people={preview.people} width={width} height={height} />
         </div>
         <span>{preview.models.person}</span>

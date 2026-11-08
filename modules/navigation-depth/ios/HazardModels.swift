@@ -168,7 +168,7 @@ final class HazardModels {
               output.shape.map(\.intValue) == [1, kind == "glass" ? 1 : 3, size, size] else {
           throw ModelError.incompatible
         }
-        masks.append(mask(output, kind: kind, size: size, depth: depth, camera: frame.camera))
+        masks.append(mask(output, kind: kind, size: size, camera: frame.camera))
         if let stairDepth {
           let total = Double(depth.width * depth.height)
           let recovered = Int((100 * Double(stairDepth.recovered) / total).rounded())
@@ -203,7 +203,9 @@ final class HazardModels {
       return (uv - center) / fit + center
     }
     let inside = pixels.map { $0.x >= 0 && $0.x < 1 && $0.y >= 0 && $0.y < 1 }
-    guard let rgb = sampleCameraRGB(image, pixels: pixels, bilinear: stairs) else { throw ModelError.noDepth }
+    // Both training loaders resize RGB with bilinear interpolation. Glass depth
+    // deliberately remains nearest-neighbour to preserve its validity channel.
+    guard let rgb = sampleCameraRGB(image, pixels: pixels, bilinear: true) else { throw ModelError.noDepth }
     let raw = pixels.enumerated().map { index, uv in
       if let stairDepth { return inside[index] ? depth.bilinear(uv, values: stairDepth) : 0 }
       return depth.depths[depth.index(uv)]
@@ -231,24 +233,24 @@ final class HazardModels {
       let value = raw[i]
       let isValid = value.isFinite && value > 0
       if stairs {
-        // Match the final StairDataset transform in databricks/ml.py.
+        // Match the final StairDataset transform in databricks/stairs.py.
         let clipped = max(p01, min(p99, value))
         values[3 * count + i] = ((clipped - p01) / stairRange - 0.5) / 0.25
       } else {
-        values[3 * count + i] = isValid ? min(1, value / p99) : 0
+        values[3 * count + i] = isValid ? min(1, value / max(p99, 1e-6)) : 0
       }
       if channels == 5 { values[4 * count + i] = isValid ? 1 : 0 }
     }
     return input
   }
 
-  private func mask(_ output: MLMultiArray, kind: String, size: Int, depth: DepthSamples, camera: ARCamera) -> [String: Any] {
-    let previewSize = 96
+  private func mask(_ output: MLMultiArray, kind: String, size: Int, camera: ARCamera) -> [String: Any] {
+    // Retain model resolution; the dashboard labels the existing dense scan.
+    let previewSize = size
     let fit = kind == "stairs" ? squareFit(width: Int(camera.imageResolution.width), height: Int(camera.imageResolution.height))
       : SIMD2<Float>(repeating: 1)
     let center = SIMD2<Float>(repeating: 0.5)
     var labels = Data()
-    var points: [[Float]] = []
     for y in 0..<previewSize {
       for x in 0..<previewSize {
         let uv = SIMD2((Float(x) + 0.5) / Float(previewSize), (Float(y) + 0.5) / Float(previewSize))
@@ -266,13 +268,9 @@ final class HazardModels {
           if riser > first || tread > first { label = tread > riser ? 2 : 1 }
         }
         labels.append(label)
-        if label != 0, x % 4 == 0, y % 4 == 0, points.count < 576,
-           let world = depth.worldPoint(uv, camera: camera), let point = relativePoint(world, camera: camera) {
-          points.append(point)
-        }
       }
     }
-    return ["kind": kind, "size": previewSize, "labels": labels.base64EncodedString(), "points": points]
+    return ["kind": kind, "size": previewSize, "labels": labels.base64EncodedString(), "points": [[Float]]()]
   }
 
   private func detectPeople(_ frame: ARFrame, depth: DepthSamples?, session: Int) throws -> [[String: Any]] {
