@@ -6,6 +6,18 @@ export type Cell = 0 | 1 | 2 // unknown, observed free, occupied
 export type DepthPoint = readonly [right: number, up: number, forward: number]
 export const MAX_DEPTH_POINTS = 6_000
 export const MAX_DEPTH_PREVIEW_DIMENSION = 256
+export const MAX_SCAN_PIXELS = 512 * 512
+export interface DenseScan {
+  width: number
+  height: number
+  timeMs: number
+  intrinsics: readonly [number, number, number, number]
+  basis: readonly number[]
+  // One Float32 depth in metres followed by RGB bytes and confidence per pixel.
+  samples: string
+  cameraColor: boolean
+  tracking?: { session: string; position: DepthPoint; yaw: number }
+}
 export interface DepthPreview {
   width: number
   height: number
@@ -19,7 +31,8 @@ export interface ModelPreview {
   latencyMs: number
   partial?: boolean
   depthPreview?: DepthPreview
-  scan?: { points: readonly DepthPoint[]; pointColors?: string }
+  scan?: { points: readonly DepthPoint[]; pointColors?: string; imageCoordinates?: string }
+  denseScan?: DenseScan
   models: Record<'glass' | 'stairs' | 'person', string>
   masks: { kind: 'glass' | 'stairs'; size: number; labels: string; points: readonly DepthPoint[] }[]
   people: { box: readonly [number, number, number, number]; confidence: number; position?: DepthPoint; predictedPosition?: DepthPoint }[]
@@ -53,6 +66,7 @@ export interface Observation {
   points?: readonly DepthPoint[]
   // Base64 RGB bytes in the same order as points. Sent only with scan sharing.
   pointColors?: string
+  denseScan?: DenseScan
   depthPreview?: DepthPreview
   smoothedDepthPreview?: DepthPreview
   // Frame-aligned detections. Undefined means unavailable; [] means no detections.

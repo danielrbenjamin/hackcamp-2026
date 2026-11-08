@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ComponentRef } from 'react'
 import { AccessibilityInfo, AppState, Platform, ScrollView, StyleSheet, Text, TextInput, useWindowDimensions, View } from 'react-native'
-import { ZONE_NAMES, type BeltStatus, type ModelPreview, type Route, type Telemetry } from '../shared/contracts'
+import { ZONE_NAMES, type BeltStatus, type DenseScan, type DepthPreview, type ModelPreview, type Route, type Telemetry } from '../shared/contracts'
 import { createLoop } from '../shared/guidance'
 import { LANTERN_BANNER } from '../shared/lantern'
 import { createMock, emptyObservation, scenarios, type Scenario } from '../shared/mock'
@@ -49,6 +49,7 @@ export default function App() {
   const [modelPreview, setModelPreview] = useState<ModelPreview>()
   const [modelProgress, setModelProgress] = useState('')
   const latestModelPreview = useRef<ModelPreview | undefined>(undefined)
+  const latestDenseScan = useRef<{ denseScan: DenseScan; depthPreview?: DepthPreview; smoothedDepthPreview?: DepthPreview } | undefined>(undefined)
   const [streamStatus, setStreamStatus] = useState('')
   const realBelt = useRef(disconnected)
   const google = useRef<Route | null>(null)
@@ -164,8 +165,15 @@ export default function App() {
 
   useEffect(() => {
     if (!streaming || !native || !sharePoints) return
+    const scan = nativeDepth?.hasDenseScan?.() ? nativeDepth.addListener('onDenseScan', ({ depthPreview, smoothedDepthPreview, ...denseScan }) => {
+      latestDenseScan.current = { denseScan, depthPreview, smoothedDepthPreview }
+    }) : undefined
     nativeDepth?.previewDepth?.(true)
-    return () => nativeDepth?.previewDepth?.(false)
+    return () => {
+      scan?.remove()
+      latestDenseScan.current = undefined
+      nativeDepth?.previewDepth?.(false)
+    }
   }, [streaming, native, sharePoints])
 
   useEffect(() => {
@@ -196,12 +204,20 @@ export default function App() {
       const value = latestFrame.current
       if (request || !value || value.observation.timeMs <= sentAt || AppState.currentState === 'background') return
       sentAt = value.observation.timeMs
+      const scan = latestDenseScan.current
+      const freshScan = scan && Math.abs(value.observation.timeMs - scan.denseScan.timeMs) < 900 ? scan : undefined
       request = new AbortController()
       const timeout = setTimeout(() => request?.abort(), 1_500)
       void fetch(endpoint, { method: 'POST', signal: request.signal,
         headers: { Authorization: `Bearer ${telemetryToken}`, 'Content-Type': 'application/json' },
         body: JSON.stringify(telemetrySummary({
           ...value, modelPreview: native && previewModels ? latestModelPreview.current : undefined,
+          observation: {
+            ...value.observation,
+            depthPreview: freshScan?.depthPreview ?? value.observation.depthPreview,
+            smoothedDepthPreview: freshScan?.smoothedDepthPreview ?? value.observation.smoothedDepthPreview,
+            denseScan: freshScan?.denseScan,
+          },
         }, native && sharePoints)),
       }).then(response => {
         if (active) setStreamStatus(response.ok ? 'Streaming to dashboard' : `Dashboard returned ${response.status}`)

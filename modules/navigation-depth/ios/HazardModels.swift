@@ -50,16 +50,32 @@ private struct DepthSamples {
     return y * width + x
   }
 
-  func bilinear(_ uv: SIMD2<Float>) -> Float {
+  func stairDepths(using smoothed: DepthSamples?) -> (values: [Float], recovered: Int, missing: Int) {
+    let fallback = smoothed.flatMap { $0.width == width && $0.height == height ? $0 : nil }
+    var recovered = 0
+    var missing = 0
+    let values = depths.enumerated().map { index, depth -> Float in
+      if depth.isFinite && depth > 0 { return depth }
+      if let fallback, fallback.confidence[index] >= 1 {
+        let candidate = fallback.depths[index]
+        if candidate.isFinite && candidate > 0 {
+          recovered += 1
+          return candidate
+        }
+      }
+      missing += 1
+      return 0
+    }
+    return (values, recovered, missing)
+  }
+
+  func bilinear(_ uv: SIMD2<Float>, values: [Float]) -> Float {
     let x = max(0, min(Float(width - 1), uv.x * Float(width) - 0.5))
     let y = max(0, min(Float(height - 1), uv.y * Float(height) - 0.5))
     let left = Int(x), top = Int(y)
     let right = min(left + 1, width - 1), bottom = min(top + 1, height - 1)
     let dx = x - Float(left), dy = y - Float(top)
-    func value(_ col: Int, _ row: Int) -> Float {
-      let depth = depths[row * width + col]
-      return depth.isFinite && depth > 0 ? depth : 0
-    }
+    func value(_ col: Int, _ row: Int) -> Float { values[row * width + col] }
     let a = value(left, top) * (1 - dx) + value(right, top) * dx
     let b = value(left, bottom) * (1 - dx) + value(right, bottom) * dx
     return a * (1 - dy) + b * dy
@@ -144,7 +160,8 @@ final class HazardModels {
         progress("Loading \(kind) model")
         let loaded = try model(name)
         progress("Running \(kind) model")
-        let input = try tensor(frame.capturedImage, depth: depth, size: size, channels: channels)
+        let stairDepth = kind == "stairs" ? depth.stairDepths(using: frame.smoothedSceneDepth.flatMap(DepthSamples.init)) : nil
+        let input = try tensor(frame.capturedImage, depth: depth, size: size, channels: channels, stairDepth: stairDepth?.values)
         let features = try MLDictionaryFeatureProvider(dictionary: ["rgbd": MLFeatureValue(multiArray: input)])
         let prediction = try loaded.prediction(from: features)
         guard let output = prediction.featureValue(for: "logits")?.multiArrayValue,
@@ -152,7 +169,14 @@ final class HazardModels {
           throw ModelError.incompatible
         }
         masks.append(mask(output, kind: kind, size: size, depth: depth, camera: frame.camera))
-        status[kind] = kind == "stairs" ? "Preview · LiDAR depth calibration unverified" : "Preview"
+        if let stairDepth {
+          let total = Double(depth.width * depth.height)
+          let recovered = Int((100 * Double(stairDepth.recovered) / total).rounded())
+          let missing = Int((100 * Double(stairDepth.missing) / total).rounded())
+          status[kind] = "Preview · \(recovered)% depth recovered · \(missing)% missing"
+        } else {
+          status[kind] = "Preview"
+        }
       } catch {
         status[kind] = message(error)
         if (error as? ModelError) == .missing { unavailable[kind] = status[kind] }
@@ -169,7 +193,7 @@ final class HazardModels {
     return String(error.localizedDescription.prefix(180))
   }
 
-  private func tensor(_ image: CVPixelBuffer, depth: DepthSamples, size: Int, channels: Int) throws -> MLMultiArray {
+  private func tensor(_ image: CVPixelBuffer, depth: DepthSamples, size: Int, channels: Int, stairDepth: [Float]?) throws -> MLMultiArray {
     let count = size * size
     let stairs = channels == 4
     let fit = stairs ? squareFit(width: CVPixelBufferGetWidth(image), height: CVPixelBufferGetHeight(image)) : SIMD2<Float>(repeating: 1)
@@ -181,7 +205,8 @@ final class HazardModels {
     let inside = pixels.map { $0.x >= 0 && $0.x < 1 && $0.y >= 0 && $0.y < 1 }
     guard let rgb = sampleCameraRGB(image, pixels: pixels, bilinear: stairs) else { throw ModelError.noDepth }
     let raw = pixels.enumerated().map { index, uv in
-      stairs ? (inside[index] ? depth.bilinear(uv) : 0) : depth.depths[depth.index(uv)]
+      if let stairDepth { return inside[index] ? depth.bilinear(uv, values: stairDepth) : 0 }
+      return depth.depths[depth.index(uv)]
     }
     let valid = raw.filter { $0.isFinite && $0 > 0 }.sorted()
     func percentile(_ fraction: Double, fallback: Float) -> Float {

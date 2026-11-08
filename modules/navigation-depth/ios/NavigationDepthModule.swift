@@ -15,7 +15,7 @@ public final class NavigationDepthModule: Module {
 
   public func definition() -> ModuleDefinition {
     Name("NavigationDepth")
-    Events("onObservation", "onStatus", "onBeltStatus", "onSiriDestination", "onHazardPreview", "onHazardPreviewStatus")
+    Events("onObservation", "onStatus", "onBeltStatus", "onSiriDestination", "onHazardPreview", "onHazardPreviewStatus", "onDenseScan")
     AsyncFunction("takeSiriDestination") { () -> String? in
       let defaults = UserDefaults.standard
       let key = "lantern.siri.destination"
@@ -84,8 +84,9 @@ public final class NavigationDepthModule: Module {
       DispatchQueue.main.async { self?.sensor.recording = enabled }
     }
     Function("previewDepth") { [weak self] (enabled: Bool) in
-      DispatchQueue.main.async { self?.sensor.previewing = enabled }
+      DispatchQueue.main.async { self?.sensor.setDepthPreview(enabled) }
     }
+    Function("hasDenseScan") { true }
     Function("previewHazards") { [weak self] (enabled: Bool) in
       DispatchQueue.main.async { self?.sensor.setHazardPreview(enabled) }
     }
@@ -107,6 +108,12 @@ private final class DepthSensor: NSObject, ARSessionDelegate {
   private var runID = 0
   private var lastFrameTime = -Double.infinity
   private var lastDepthTime = -Double.infinity
+  private let scanQueue = DispatchQueue(label: "navigation.dense-scan", qos: .utility)
+  private var scanPending = false
+  private var scanGeneration = 0
+  private var scanOrigin: simd_float4x4?
+  private var scanSession = UUID().uuidString
+  private var lastScanTime = -Double.infinity
   private let hazardModels = HazardModels()
   private let hazardQueue = DispatchQueue(label: "navigation.hazard-preview", qos: .utility)
   private var hazardEnabled = false
@@ -116,7 +123,15 @@ private final class DepthSensor: NSObject, ARSessionDelegate {
   private var lastHazardTime = -Double.infinity
   private var recentHits: [(time: TimeInterval, points: [SIMD2<Float>])] = []
   var recording = false
-  var previewing = false
+  private var previewing = false
+
+  func setDepthPreview(_ enabled: Bool) {
+    previewing = enabled
+    scanGeneration += 1
+    scanOrigin = nil
+    scanSession = UUID().uuidString
+    lastScanTime = -Double.infinity
+  }
 
   func setHazardPreview(_ enabled: Bool) {
     hazardEnabled = enabled
@@ -168,6 +183,9 @@ private final class DepthSensor: NSObject, ARSessionDelegate {
     session.delegate = self
     lastFrameTime = -Double.infinity
     lastDepthTime = -Double.infinity
+    lastScanTime = -Double.infinity
+    scanOrigin = nil
+    scanSession = UUID().uuidString
     hazardGeneration += 1
     lastHazardTime = -Double.infinity
     firstHazardPreview = true
@@ -200,8 +218,6 @@ private final class DepthSensor: NSObject, ARSessionDelegate {
     let pose = frame.camera.transform
     var cells = [Int](repeating: 0, count: 800)
     var zones = [Any](repeating: NSNull(), count: 5)
-    var points = [[Double]]()
-    var pointPixels = [SIMD2<Float>]()
     let columns = [pose.columns.0, pose.columns.1, pose.columns.2, pose.columns.3]
     var payload: [String: Any] = [
       "source": "arkit",
@@ -217,12 +233,7 @@ private final class DepthSensor: NSObject, ARSessionDelegate {
       }
       let capture = recording && frame.timestamp - lastDepthTime >= 0.5
       if capture { lastDepthTime = frame.timestamp }
-      payload["depth"] = project(depth, camera: frame.camera, cells: &cells, zones: &zones,
-                                 points: &points, pointPixels: &pointPixels, capture: capture)
-      if previewing {
-        payload["depthPreview"] = encodeDepthPreview(depth)
-        payload["smoothedDepthPreview"] = frame.smoothedSceneDepth.flatMap(encodeDepthPreview)
-      }
+      payload["depth"] = project(depth, camera: frame.camera, cells: &cells, zones: &zones, capture: capture)
       if simd_length(cameraForward) > 0.4 {
         retainRecentHits(pose: pose, forward: simd_normalize(cameraForward), time: frame.timestamp, cells: &cells)
       } else {
@@ -232,12 +243,39 @@ private final class DepthSensor: NSObject, ARSessionDelegate {
       recentHits.removeAll()
     }
     payload["zones"] = zones
-    if previewing {
-      payload["points"] = points
-      payload["pointColors"] = sampleCameraRGB(frame.capturedImage, pixels: pointPixels)?.base64EncodedString()
-    }
     payload["grid"] = ["width": 40, "height": 20, "cellM": 0.25, "cells": cells] as [String: Any]
     emit("onObservation", payload)
+    if case .limited(.relocalizing) = frame.camera.trackingState, scanOrigin != nil {
+      scanOrigin = nil
+      scanSession = UUID().uuidString
+      scanGeneration += 1
+    }
+    if previewing, !scanPending, frame.sceneDepth != nil, frame.timestamp - lastScanTime >= 0.25 {
+      scanPending = true
+      lastScanTime = frame.timestamp
+      let generation = scanGeneration
+      let run = runID
+      if scanOrigin == nil, case .normal = frame.camera.trackingState,
+         simd_length(SIMD2(pose.columns.2.x, pose.columns.2.z)) > 0.1 {
+        scanOrigin = pose
+      }
+      let origin = scanOrigin
+      let trackingSession = scanSession
+      scanQueue.async { [weak self] in
+        let scan = denseScan(frame, timeMs: timestamp, origin: origin, session: trackingSession).map { encoded in
+          var preview = encoded
+          preview["depthPreview"] = frame.sceneDepth.flatMap(Self.encodeDepthPreview)
+          preview["smoothedDepthPreview"] = frame.smoothedSceneDepth.flatMap(Self.encodeDepthPreview)
+          return preview
+        }
+        DispatchQueue.main.async {
+          guard let self else { return }
+          self.scanPending = false
+          guard self.runID == run, self.previewing, self.scanGeneration == generation, let scan else { return }
+          self.emit?("onDenseScan", scan)
+        }
+      }
+    }
     if hazardEnabled, !hazardPending, frame.timestamp - lastHazardTime >= 0.65,
        case .normal = frame.camera.trackingState {
       hazardPending = true
@@ -245,12 +283,12 @@ private final class DepthSensor: NSObject, ARSessionDelegate {
       let generation = hazardGeneration
       let run = runID
       let reportProgress = firstHazardPreview
-      let backdrop = payload["depthPreview"] as? [String: Any]
-      var capturedScan: [String: Any] = ["points": points]
-      capturedScan["pointColors"] = payload["pointColors"]
-      let scan = previewing && !points.isEmpty ? capturedScan : nil
+      let shareScan = previewing
+      let scanRun = scanGeneration
       if reportProgress { emit("onHazardPreviewStatus", ["message": "Preparing the first model preview"]) }
       hazardQueue.async { [weak self, hazardModels = self.hazardModels] in
+        let scan = shareScan ? denseScan(frame, timeMs: timestamp) : nil
+        let backdrop = shareScan ? frame.sceneDepth.flatMap(Self.encodeDepthPreview) : nil
         var result = hazardModels.preview(frame, timeMs: timestamp, session: generation, progress: { message in
           guard reportProgress else { return }
           DispatchQueue.main.async { [weak self] in
@@ -261,22 +299,26 @@ private final class DepthSensor: NSObject, ARSessionDelegate {
           guard reportProgress else { return }
           var frame = result
           frame["depthPreview"] = backdrop
-          frame["scan"] = scan
+          frame["denseScan"] = scan
           let preview = frame
           DispatchQueue.main.async { [weak self] in
             guard let self, self.runID == run, self.hazardEnabled, self.hazardGeneration == generation else { return }
-            self.emit?("onHazardPreview", preview)
+            var payload = preview
+            if self.scanGeneration != scanRun { payload.removeValue(forKey: "denseScan"); payload.removeValue(forKey: "depthPreview") }
+            self.emit?("onHazardPreview", payload)
           }
         })
         result["depthPreview"] = backdrop
-        result["scan"] = scan
+        result["denseScan"] = scan
         let preview = result
         DispatchQueue.main.async {
           guard let self else { return }
           self.hazardPending = false
           guard self.runID == run, self.hazardEnabled, self.hazardGeneration == generation else { return }
           self.firstHazardPreview = false
-          self.emit?("onHazardPreview", preview)
+          var payload = preview
+          if self.scanGeneration != scanRun { payload.removeValue(forKey: "denseScan"); payload.removeValue(forKey: "depthPreview") }
+          self.emit?("onHazardPreview", payload)
         }
       }
     }
@@ -302,7 +344,7 @@ private final class DepthSensor: NSObject, ARSessionDelegate {
     recentHits.append((time, observed))
   }
 
-  private func encodeDepthPreview(_ depth: ARDepthData) -> [String: Any]? {
+  private static func encodeDepthPreview(_ depth: ARDepthData) -> [String: Any]? {
     let map = depth.depthMap
     guard let confidence = depth.confidenceMap,
           CVPixelBufferGetPixelFormatType(map) == kCVPixelFormatType_DepthFloat32,
@@ -327,7 +369,7 @@ private final class DepthSensor: NSObject, ARSessionDelegate {
       for x in stride(from: 0, to: width, by: step) {
         let z = depths.load(fromByteOffset: y * depthStride + x * 4, as: Float.self)
         let quality = min(2, qualities.load(fromByteOffset: y * confidenceStride + x, as: UInt8.self))
-        let cm = z.isFinite && z >= 0.01 && z <= 5 ? UInt16((z * 100).rounded()) : 0
+        let cm = z.isFinite && z > 0 ? UInt16(min(16_383, max(1, (z * 100).rounded()))) : 0
         let sample = cm | (UInt16(quality) << 14)
         samples.append(UInt8(truncatingIfNeeded: sample))
         samples.append(UInt8(sample >> 8))
@@ -337,7 +379,7 @@ private final class DepthSensor: NSObject, ARSessionDelegate {
   }
 
   private func project(_ depth: ARDepthData, camera: ARCamera, cells: inout [Int], zones: inout [Any],
-                       points: inout [[Double]], pointPixels: inout [SIMD2<Float>], capture: Bool) -> [String: Any]? {
+                       capture: Bool) -> [String: Any]? {
     let map = depth.depthMap
     guard let confidence = depth.confidenceMap,
           CVPixelBufferGetPixelFormatType(map) == kCVPixelFormatType_DepthFloat32,
@@ -362,9 +404,6 @@ private final class DepthSensor: NSObject, ARSessionDelegate {
     let intrinsics = camera.intrinsics
     let scaleX = Float(camera.imageResolution.width) / Float(width)
     let scaleY = Float(camera.imageResolution.height) / Float(height)
-    let maxPreviewPoints = 6_000
-    let candidateCount = ((width + 1) / 3) * ((height + 1) / 3)
-    let previewStride = max(1, (candidateCount + maxPreviewPoints - 1) / maxPreviewPoints)
     var support = [Int](repeating: 0, count: 5)
     var nearest = [Float](repeating: .infinity, count: 5)
 
@@ -383,11 +422,6 @@ private final class DepthSensor: NSObject, ARSessionDelegate {
         let lateral = simd_dot(horizontal, right)
         let ahead = simd_dot(horizontal, forward)
         let distance = simd_length(horizontal)
-        if previewing, (x / 3 + y / 3) % previewStride == 0, points.count < maxPreviewPoints,
-           ahead > 0, distance < 5, abs(offset.y) <= 3 {
-          points.append([lateral, offset.y, ahead].map { (Double($0) * 100).rounded() / 100 })
-          pointPixels.append(SIMD2((Float(x) + 0.5) / Float(width), (Float(y) + 0.5) / Float(height)))
-        }
         // Height limits assume the camera is 1.2 m above the floor.
         guard ahead > 0, distance < 5, offset.y > -1.0, offset.y < 0.6 else { continue }
         let angle = atan2(lateral, ahead) * 180 / .pi

@@ -45,8 +45,8 @@ export function DepthImages({ observation }: { observation?: Observation }) {
 
   if (!preview) {
     const message = observation?.source !== 'arkit' ? 'Waiting for live iPhone LiDAR telemetry.'
-      : observation.points === undefined ? 'Turn on Share 3D scan with dashboard in Lantern.'
-      : observation.points.length === 0 ? 'Scan sharing is on. Waiting for usable LiDAR returns.'
+      : observation.points === undefined && !observation.denseScan ? 'Turn on Share 3D scan with dashboard in Lantern.'
+      : observation.points?.length === 0 ? 'Scan sharing is on. Waiting for usable LiDAR returns.'
       : 'The iPhone is sending 3D points but no depth or confidence image. Check the installed iOS build and reload Lantern from the latest Expo checkout.'
     return <p className="waiting">{message}</p>
   }

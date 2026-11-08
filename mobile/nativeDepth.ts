@@ -1,5 +1,5 @@
 import { requireOptionalNativeModule } from 'expo'
-import type { BeltStatus, Cue, Five, ModelPreview, Observation, Prediction } from '../shared/contracts'
+import type { BeltStatus, Cue, DenseScan, DepthPreview, Five, ModelPreview, Observation, Prediction } from '../shared/contracts'
 
 export type DepthStatus = 'idle' | 'starting' | 'running' | 'unsupported' | 'denied' | 'interrupted' | 'failed'
 export interface PlaceSuggestion {
@@ -7,6 +7,7 @@ export interface PlaceSuggestion {
   label: string
   name?: string
 }
+export type ScanPreview = DenseScan & { depthPreview?: DepthPreview; smoothedDepthPreview?: DepthPreview }
 interface Events {
   onObservation: Observation
   onStatus: { status: DepthStatus }
@@ -14,6 +15,7 @@ interface Events {
   onSiriDestination: Record<string, never>
   onHazardPreview: ModelPreview
   onHazardPreviewStatus: { message: string }
+  onDenseScan: ScanPreview
 }
 
 interface DepthModule {
@@ -28,6 +30,7 @@ interface DepthModule {
   setSiriAutoStart?(enabled: boolean): void
   recordDepth(enabled: boolean): void
   previewDepth?(enabled: boolean): void
+  hasDenseScan?(): boolean
   previewHazards?(enabled: boolean): void
   connectBelt(): void
   disconnectBelt(): void

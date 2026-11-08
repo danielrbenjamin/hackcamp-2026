@@ -6,10 +6,10 @@ import type { Telemetry } from '../shared/contracts'
 export function telemetrySummary(frame: Telemetry, sharePoints = false): Telemetry {
   const { modelPreview, ...summary } = frame
   const { depth: _depth, pose: _pose, forwardTrueHeading: _heading, points, pointColors, hazards,
-    depthPreview, smoothedDepthPreview, ...observation } = frame.observation
+    depthPreview, smoothedDepthPreview, denseScan, ...observation } = frame.observation
   const { trueBearing: _bearing, updatedAtMs: _updated, ...route } = frame.route
   return { ...summary, modelPreview: sharePoints ? modelPreview : undefined,
-    observation: sharePoints ? { ...observation, points, pointColors, hazards, depthPreview, smoothedDepthPreview } : observation,
+    observation: sharePoints ? { ...observation, points, pointColors, hazards, depthPreview, smoothedDepthPreview, denseScan } : observation,
     route: { ...route, destination: '', maneuver: '' } }
 }
 
@@ -22,7 +22,7 @@ export function createRecording() {
       if (lines.length >= 240) return
       const { route } = telemetrySummary(frame)
       const { points: _points, pointColors: _colors, depthPreview: _preview,
-        smoothedDepthPreview: _smoothed, ...observation } = frame.observation
+        smoothedDepthPreview: _smoothed, denseScan: _denseScan, ...observation } = frame.observation
       lines.push(JSON.stringify({ schemaVersion: 1, sessionId, sequence: lines.length, startedAtMs,
         consent: { granted: true, scope: 'local-recording' }, frame: { ...frame, observation, route } }))
     },
