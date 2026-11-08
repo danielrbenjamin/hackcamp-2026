@@ -1,8 +1,7 @@
-import { memo, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useEffect, useMemo, useRef } from 'react'
 import type { ModelPreview as Preview } from '../shared/contracts'
 import { PointCloud } from './PointCloud'
 import { glassBearing } from './modelColors'
-import { estimateGlassRange } from './glassRange'
 import { distancePalette } from './DepthImages'
 import { orientImagePoint, scanDisplayRotation } from './denseScan'
 
@@ -114,29 +113,7 @@ export const ModelPreview = memo(function ModelPreview({ preview, view, mutedDep
     }) ?? [], [preview])
   const matchingScan = preview?.denseScan?.timeMs === preview?.timeMs ? preview?.denseScan : undefined
   const masks = preview?.masks
-  const glassReading = useMemo(() => matchingScan && masks ? {
-    timeMs: matchingScan.timeMs,
-    session: matchingScan.tracking?.session,
-    bearing: glassBearing(matchingScan, masks),
-    range: estimateGlassRange(matchingScan, masks),
-  } : undefined, [matchingScan, masks])
-  const previousGlassReading = useRef<typeof glassReading>(undefined)
-  const [confirmedGlassTime, setConfirmedGlassTime] = useState<number>()
-  useEffect(() => {
-    if (preview?.partial && !glassReading?.bearing) return
-    const previous = previousGlassReading.current
-    if (glassReading && previous?.timeMs === glassReading.timeMs) return
-    previousGlassReading.current = glassReading
-    if (previous?.range === undefined || glassReading?.range === undefined ||
-        !previous.bearing || !glassReading.bearing || previous.session !== glassReading.session) return
-    const elapsed = glassReading.timeMs - previous.timeMs
-    if (elapsed > 0 && elapsed <= 8000 &&
-        Math.abs(glassReading.range - previous.range) <= 0.2 &&
-        Math.abs(glassReading.bearing.left - previous.bearing.left) <= 8 &&
-        Math.abs(glassReading.bearing.right - previous.bearing.right) <= 8) {
-      setConfirmedGlassTime(glassReading.timeMs)
-    }
-  }, [glassReading, preview?.partial])
+  const bearing = useMemo(() => matchingScan && masks ? glassBearing(matchingScan, masks) : undefined, [matchingScan, masks])
   if (!preview) return <p className="waiting">On iPhone, enable Preview hazard models and Share 3D scan with dashboard.</p>
 
   const depth = preview.depthPreview
@@ -145,8 +122,6 @@ export const ModelPreview = memo(function ModelPreview({ preview, view, mutedDep
   const rotation = scanDisplayRotation(preview.denseScan)
   const portrait = Math.abs(rotation) === 90
   const alignedScan = !!preview.denseScan || !!preview.scan?.imageCoordinates
-  const bearing = glassReading?.bearing
-  const glassRange = glassReading?.timeMs === confirmedGlassTime ? glassReading?.range : undefined
   const unlocated = preview.people.filter(person => !person.position || person.position[2] < 0.08).length
   return <>
     <div className="model-preview-toolbar">
@@ -154,7 +129,7 @@ export const ModelPreview = memo(function ModelPreview({ preview, view, mutedDep
         <button aria-pressed={!mutedDepth} onClick={() => setMutedDepth(false)}>Color</button>
         <button aria-pressed={mutedDepth} onClick={() => setMutedDepth(true)}>Muted blue</button>
       </div>}
-      {bearing && <span>Glass bearing {bearing.left.toFixed(0)}° to {bearing.right.toFixed(0)}° · {glassRange === undefined ? 'Distance unknown' : `Estimated glass distance ~${glassRange.toFixed(1)} m`}</span>}
+      {bearing && <span>Glass bearing {bearing.left.toFixed(0)}° to {bearing.right.toFixed(0)}°</span>}
       <span className="model-latency">{Math.round(preview.latencyMs)} ms{preview.partial ? ' · Partial results' : ''}</span>
     </div>
     {view === 'scan' ? (preview.scan || preview.denseScan) ? <>
