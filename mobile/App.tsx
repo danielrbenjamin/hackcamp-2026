@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useRef, useState, type ComponentRef } from 'react'
-import { AppState, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native'
+import { AccessibilityInfo, AppState, Platform, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native'
 import { ZONE_NAMES, type BeltStatus, type Route, type Telemetry } from '../shared/contracts'
-import { LANTERN_BANNER } from '../shared/lantern'
 import { createLoop } from '../shared/guidance'
+import { LANTERN_BANNER } from '../shared/lantern'
 import { createMock, emptyObservation, type Scenario } from '../shared/mock'
 import { nativeDepth, type DepthStatus } from './nativeDepth'
 import GoogleRoute from './GoogleRoute'
 import { RouteCard } from './RouteCard'
+import { ActionButton as Control } from './ActionButton'
+import { mono } from './terminal'
 import { createRecording, telemetrySummary } from './session'
 
 const telemetryUrl = process.env.EXPO_PUBLIC_TELEMETRY_URL
@@ -18,6 +20,7 @@ export default function App() {
   const [frame, setFrame] = useState<Telemetry>()
   const [scenario, setScenario] = useState<Scenario>('walk')
   const [native, setNative] = useState(false)
+  const [showTools, setShowTools] = useState(false)
   const [status, setStatus] = useState<DepthStatus>('idle')
   const [connected, setConnected] = useState(true)
   const [destination, setDestination] = useState('Engineering Design Centre')
@@ -210,34 +213,24 @@ export default function App() {
   const cue = frame?.command.cue
   const warning = cue === 'obstacle' ? 'Obstacle detected'
     : cue === 'unavailable' ? 'Depth unavailable'
-    : frame?.heading != null ? `Local cue ${frame.heading}°` : 'Waiting for guidance'
+    : frame?.heading != null ? `Direction cue: ${frame.heading === 0 ? 'ahead' : frame.heading < 0 ? 'left' : 'right'}`
+    : 'No direction cue'
+
+  useEffect(() => {
+    if (cue === 'obstacle' || cue === 'unavailable') AccessibilityInfo.announceForAccessibility(warning)
+  }, [cue, warning])
 
   return (
     <ScrollView ref={scrollView} style={styles.page} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-      <View style={styles.titlebar}>
-        <Text accessibilityRole="header" style={styles.title}>[+] Lantern</Text>
-        <Text style={styles.muted}>{native ? 'ARKIT' : 'SIM'}</Text>
-      </View>
-      <Text accessible={false} aria-hidden style={styles.wordmark}>{LANTERN_BANNER}</Text>
+      <Text accessible accessibilityRole="header" accessibilityLabel="Lantern"
+        allowFontScaling={false} style={styles.wordmark}>{LANTERN_BANNER}</Text>
       <View style={styles.toolbar}>
         <Control label="Simulation" selected={!native} onPress={() => { if (native) setSensorMode(false) }} />
         {nativeDepth && <Control label="iPhone LiDAR" selected={native} onPress={() => { if (!native) setSensorMode(true) }} />}
       </View>
-      <View style={styles.panel}>
-        <Text style={styles.kicker}>{native ? `[+] LiDAR / ${status}` : '[+] LiDAR'}</Text>
+      <View style={[styles.panel, cue === 'obstacle' && styles.alertPanel]}>
+        <Text style={styles.value}>{native ? 'Obstacle alerts' : 'Simulated obstacle alerts'}</Text>
         <Text accessibilityLiveRegion="polite" style={[styles.heading, cue === 'obstacle' && styles.alert]}>{warning}</Text>
-        {ZONE_NAMES.map((name, i) => (
-          <View style={styles.zone} key={name}>
-            <Text style={styles.muted}>{name}</Text>
-            <Text style={styles.value}>{frame?.observation.zones[i]?.toFixed(2) ?? '—'} m</Text>
-          </View>
-        ))}
-        {native && frame?.observation.source === 'arkit' && (
-          <Text style={styles.muted}>
-            {frame.observation.grid.cells.filter(cell => cell === 2).length} occupied grid cells
-            {frame.observation.timeMs > 0 ? ` · ${Math.max(0, Math.round(Date.now() - frame.observation.timeMs))} ms frame age` : ''}
-          </Text>
-        )}
       </View>
       {!native && <View style={styles.row}>
         {(['walk', 'obstacle', 'dropout'] as const).map(value => (
@@ -250,37 +243,50 @@ export default function App() {
         if (routeY.current === null && siriDestination) scrollView.current?.scrollTo({ y })
         routeY.current = y
       }}>
-        <Text style={styles.kicker}>&gt; Google walking route</Text>
+        <Text accessibilityRole="header" style={styles.kicker}>Walking directions</Text>
         <RouteCard route={frame?.route.source === 'google' ? frame.route : undefined} />
         <GoogleRoute onRoute={onRoute} siriDestination={status === 'idle' || status === 'starting' ? undefined : siriDestination} />
-        <Control label="Enable direction cues" selected={fieldGuidance} onPress={() => setFieldGuidance(!fieldGuidance)} />
-        <Control label="Enable Core ML" selected={coreML} onPress={() => setCoreML(!coreML)} />
-        <Text style={styles.muted}>{frame?.prediction
-          ? `${frame.prediction.version} · ${frame.prediction.latencyMs.toFixed(1)} ms`
-          : coreML ? 'Core ML unavailable. Using clearance rules.' : 'Using clearance rules.'}</Text>
       </View>}
       {!native && <View style={styles.panel}>
-        <Text style={styles.kicker}>&gt; Simulated route</Text>
+        <Text accessibilityRole="header" style={styles.kicker}>Simulated route</Text>
         <TextInput accessibilityLabel="Simulated destination" style={styles.input} value={destination}
           onChangeText={setDestination} onSubmitEditing={() => mock.setDestination(destination)} returnKeyType="go" />
         <Control label="Set destination" onPress={() => mock.setDestination(destination)} />
         <RouteCard route={frame?.route.source === 'simulated' ? frame.route : undefined} />
       </View>}
       <View style={styles.panel}>
-        <Text style={styles.kicker}>{native && beltEnabled ? `[#] Belt / ${beltState}` : '[#] Simulated belt'}</Text>
+        <Text accessibilityRole="header" style={styles.kicker}>{native ? 'Belt' : 'Simulated belt'}</Text>
+        {native && <Text style={styles.muted}>{beltEnabled ? `Connection: ${beltState}` : 'Disconnected'}</Text>}
         {frame?.belt.battery != null && <Text style={styles.muted}>{frame.belt.battery}% battery</Text>}
-        <View style={styles.row}>{ZONE_NAMES.map((name, i) => (
-          <View key={name} accessibilityLabel={name} style={[styles.motor,
+        {showTools && <View style={styles.row}>{ZONE_NAMES.map((name, i) => (
+          <View key={name} accessible accessibilityLabel={`${name}: ${frame?.belt.connected && (frame.command.motors[i] ?? 0) > 0 ? 'cue active' : 'idle'}`} style={[styles.motor,
             frame?.belt.connected && (frame.command.motors[i] ?? 0) > 0 && (cue === 'obstacle' ? styles.motorAlert : styles.motorOn)]} />
-        ))}</View>
+        ))}</View>}
         {native ? <Control label={beltEnabled ? 'Disconnect physical belt' : 'Scan for physical belt'}
           onPress={() => setBeltEnabled(!beltEnabled)} /> : <Control label={connected ? 'Disconnect belt' : 'Reconnect belt'} onPress={() => {
           mock.setConnected(!connected)
           setConnected(!connected)
         }} />}
       </View>
+      <Control label={showTools ? 'Hide testing and data tools' : 'Testing and data tools'} selected={showTools}
+        onPress={() => setShowTools(!showTools)} />
+      {showTools && <>
       <View style={styles.panel}>
-        <Text style={styles.kicker}>&gt;_ Session data</Text>
+        <Text accessibilityRole="header" style={styles.kicker}>Sensor readings</Text>
+        {ZONE_NAMES.map((name, i) => <View style={styles.zone} key={name}>
+          <Text style={styles.muted}>{name}</Text>
+          <Text style={styles.value}>{frame?.observation.zones[i]?.toFixed(2) ?? '—'} m</Text>
+        </View>)}
+        {native && <>
+          <Control label="Enable direction cues" selected={fieldGuidance} onPress={() => setFieldGuidance(!fieldGuidance)} />
+          <Control label="Enable Core ML" selected={coreML} onPress={() => setCoreML(!coreML)} />
+          <Text style={styles.muted}>{frame?.prediction
+            ? `${frame.prediction.version} · ${frame.prediction.latencyMs.toFixed(1)} ms`
+            : coreML ? 'Core ML unavailable. Using clearance rules.' : 'Using clearance rules.'}</Text>
+        </>}
+      </View>
+      <View style={styles.panel}>
+        <Text accessibilityRole="header" style={styles.kicker}>Session data</Text>
         <Text style={styles.muted}>Recording keeps depth and pose on this device until you export. Up to 240 samples.</Text>
         <Control label={recording ? 'Stop recording' : 'Start recording'} onPress={recording ? stopRecording : startRecording} />
         <Text style={styles.muted}>{count} samples{recordStatus ? ` · ${recordStatus}` : ''}</Text>
@@ -296,38 +302,30 @@ export default function App() {
           <Text style={styles.muted}>{streamStatus}</Text>
         </>}
       </View>
+      </>}
     </ScrollView>
   )
 }
-
-function Control({ label, selected, onPress }: { label: string; selected?: boolean; onPress: () => void }) {
-  return <Pressable accessibilityRole="button" accessibilityState={{ selected }} onPress={onPress}
-    style={[styles.button, selected && styles.selected]}><Text style={styles.value}>{label}</Text></Pressable>
-}
-
-const mono = Platform.OS === 'ios' ? 'Menlo' : 'monospace'
 
 const styles = StyleSheet.create({
   page: { backgroundColor: '#090b0e' },
   content: { padding: 16, paddingTop: Platform.OS === 'web' ? 24 : 68, paddingBottom: 40, gap: 10,
     width: '100%', maxWidth: 560, alignSelf: 'center' },
-  kicker: { color: '#9dd9e8', backgroundColor: '#151a1e', fontFamily: mono, fontSize: 12, fontWeight: '700',
-    textTransform: 'uppercase', marginHorizontal: -12, marginTop: -12, padding: 8, borderBottomWidth: 1, borderColor: '#2c353b' },
-  titlebar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    backgroundColor: '#151a1e', borderWidth: 1, borderColor: '#2c353b', padding: 10 },
-  title: { color: '#d7e9ed', fontFamily: mono, fontSize: 18, fontWeight: '700' },
-  wordmark: { color: '#9dd9e8', fontFamily: mono, fontSize: 7, lineHeight: 7, paddingVertical: 4 },
-  toolbar: { flexDirection: 'row', gap: 6, flexWrap: 'wrap' },
-  heading: { color: '#d0f5ff', fontFamily: mono, fontSize: 20, fontWeight: '700' },
+  kicker: { color: '#a7edff', fontFamily: mono, fontSize: 18, fontWeight: '700',
+    backgroundColor: '#151a1e', marginHorizontal: -14, marginTop: -14, padding: 10,
+    borderBottomWidth: 1, borderColor: '#465b68' },
+  wordmark: { color: '#a7edff', fontFamily: mono, fontSize: 7, lineHeight: 9, paddingVertical: 4 },
+  toolbar: { flexDirection: 'row', gap: 8, flexWrap: 'wrap' },
+  heading: { color: '#f5fafc', fontFamily: mono, fontSize: 24, fontWeight: '700' },
   alert: { color: '#ffc78e' },
-  muted: { color: '#96acb9', fontFamily: mono, fontSize: 12 },
-  value: { color: '#d5e3eb', fontFamily: mono, fontSize: 12, fontWeight: '600' },
-  panel: { backgroundColor: '#0c1117', borderWidth: 1, borderColor: '#32404c', padding: 12, gap: 9 },
+  muted: { color: '#c8d8e2', fontFamily: mono, fontSize: 17 },
+  value: { color: '#f5fafc', fontFamily: mono, fontSize: 17, fontWeight: '600' },
+  panel: { backgroundColor: '#0c1117', borderWidth: 1, borderColor: '#465b68', padding: 14, gap: 12 },
+  alertPanel: { borderColor: '#ffc78e', backgroundColor: '#342418' },
   row: { flexDirection: 'row', gap: 8, flexWrap: 'wrap' },
   zone: { flexDirection: 'row', justifyContent: 'space-between' },
-  button: { padding: 10, backgroundColor: '#0d141b', borderWidth: 1, borderColor: '#32404c' },
-  selected: { backgroundColor: '#142a36', borderColor: '#8ce0f4' },
-  input: { color: '#d5e3eb', fontFamily: mono, borderBottomWidth: 1, borderColor: '#32404c', paddingVertical: 10 },
+  input: { color: '#f5fafc', fontFamily: mono, fontSize: 18, minHeight: 54, borderWidth: 1, borderColor: '#728795',
+    backgroundColor: '#090b0e', paddingHorizontal: 14, paddingVertical: 12 },
   motor: { flex: 1, minWidth: 30, height: 16, borderWidth: 1, borderColor: '#32404c', backgroundColor: '#182430' },
   motorOn: { backgroundColor: '#8ce0f4' },
   motorAlert: { backgroundColor: '#ffc78e' },

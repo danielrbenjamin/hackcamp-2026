@@ -3,6 +3,9 @@ const { withAppDelegate, withInfoPlist } = require('expo/config-plugins')
 module.exports = function withGoogleNavigation(config) {
   config = withInfoPlist(config, mod => {
     mod.modResults.GMSApiKey = process.env.GOOGLE_MAPS_IOS_API_KEY.trim()
+    mod.modResults.UIBackgroundModes = [...new Set([
+      ...(mod.modResults.UIBackgroundModes ?? []), 'location', 'audio',
+    ])]
     return mod
   })
   return withAppDelegate(config, mod => {

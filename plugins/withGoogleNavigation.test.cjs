@@ -3,6 +3,19 @@ const { execFileSync } = require('node:child_process')
 const { test } = require('node:test')
 const withGoogleNavigation = require('./withGoogleNavigation')
 
+test('Google navigation adds required iOS background modes without duplicating existing modes', async t => {
+  const key = process.env.GOOGLE_MAPS_IOS_API_KEY
+  t.after(() => {
+    if (key === undefined) delete process.env.GOOGLE_MAPS_IOS_API_KEY
+    else process.env.GOOGLE_MAPS_IOS_API_KEY = key
+  })
+  process.env.GOOGLE_MAPS_IOS_API_KEY = 'test-key'
+  const config = withGoogleNavigation({ name: 'Test', slug: 'test' })
+  const mod = config.mods.ios.infoPlist
+  const result = await mod({ modRequest: {}, modResults: { UIBackgroundModes: ['bluetooth-central', 'location'] } })
+  assert.deepEqual(result.modResults.UIBackgroundModes, ['bluetooth-central', 'location', 'audio'])
+})
+
 test('Google key setup applies once to the installed Expo AppDelegate template', async () => {
   const config = withGoogleNavigation({ name: 'Test', slug: 'test' })
   const mod = config.mods.ios.appDelegate

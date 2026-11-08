@@ -4,6 +4,7 @@
     "slug": "navigation-belt",
     "version": "0.1.0",
     "orientation": "portrait",
+    "icon": "./assets/lantern-icon.png",
     "scheme": "navigationbelt",
     "platforms": ["ios", "web"],
     "ios": {

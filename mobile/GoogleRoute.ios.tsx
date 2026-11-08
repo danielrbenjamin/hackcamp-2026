@@ -1,12 +1,13 @@
 import { useEffect, useEffectEvent, useRef, useState } from 'react'
-import { Button, Keyboard, Pressable, StyleSheet, Switch, Text, TextInput, View } from 'react-native'
+import { Keyboard, Pressable, StyleSheet, Switch, Text, TextInput, View } from 'react-native'
 import { requestForegroundPermissionsAsync } from 'expo-location'
-import { NavigationProvider, NavigationSessionStatus, NavigationView, NavState, RouteStatus, TravelMode, useNavigation } from '@googlemaps/react-native-navigation-sdk'
+import { NavigationProvider, NavigationSessionStatus, NavState, RouteStatus, TravelMode, useNavigation } from '@googlemaps/react-native-navigation-sdk'
 import { routeBearing, type Coordinate } from '../shared/geo'
-import { chooseSiriPlace } from '../shared/placeMatch'
 import type { Route } from '../shared/contracts'
 import type { GoogleRouteProps } from './GoogleRoute'
 import { nativeDepth, type PlaceSuggestion } from './nativeDepth'
+import { ActionButton } from './ActionButton'
+import { mono } from './terminal'
 
 const termsOptions = { title: 'Lantern', companyName: 'Lantern' }
 
@@ -31,6 +32,8 @@ function WalkingRoute({ onRoute, siriDestination }: GoogleRouteProps) {
   const [suggestions, setSuggestions] = useState<PlaceSuggestion[]>([])
   const [searchStatus, setSearchStatus] = useState('')
   const [busy, setBusy] = useState(false)
+  const [showOptions, setShowOptions] = useState(false)
+  const working = useRef(false)
   const [guiding, setGuiding] = useState(false)
   const [initialized, setInitialized] = useState(false)
   const [locationReady, setLocationReady] = useState(false)
@@ -57,10 +60,8 @@ function WalkingRoute({ onRoute, siriDestination }: GoogleRouteProps) {
           : nativeDepth?.searchPlaces?.(query)) ?? []
         if (!active) return
         setSuggestions(matches)
-        const match = spokenSearch && autoStart ? chooseSiriPlace(query, matches) : null
-        setAutoPlace(match)
-        setSearchStatus(!matches.length ? 'No places found.'
-          : spokenSearch && autoStart && !match ? 'Pick a destination from the results.' : '')
+        setAutoPlace(spokenSearch && autoStart ? matches[0] ?? null : null)
+        setSearchStatus(matches.length ? '' : 'No places found.')
       } catch {
         if (active) setSearchStatus('Place search unavailable. Check your connection and Places API setup.')
       }
@@ -181,7 +182,9 @@ function WalkingRoute({ onRoute, siriDestination }: GoogleRouteProps) {
   }, [controller, onRoute, setOnArrival, setOnLocationChanged, setOnReroutingRequestedByOffRoute, setOnRouteChanged, setOnTurnByTurn])
 
   async function connect() {
+    if (working.current) return
     const state = session.current
+    working.current = true
     setBusy(true)
     try {
       if (!(await requestForegroundPermissionsAsync()).granted) throw new Error('Location permission is required.')
@@ -196,10 +199,11 @@ function WalkingRoute({ onRoute, siriDestination }: GoogleRouteProps) {
       setStatus('')
     } catch (error) {
       setStatus(error instanceof Error ? error.message : 'Google Navigation could not initialize.')
-    } finally { setBusy(false) }
+    } finally { working.current = false; setBusy(false) }
   }
 
   async function start(place = selected) {
+    if (working.current || session.current.active) return
     const state = session.current
     const title = place?.label ?? destination.trim()
     const parts = title.split(',').map(value => value.trim())
@@ -211,14 +215,16 @@ function WalkingRoute({ onRoute, siriDestination }: GoogleRouteProps) {
       return
     }
     if (!state.location) { setStatus('Waiting for the first Google location fix. Try again shortly.'); return }
+    working.current = true
     setBusy(true)
+    setStatus('Finding a walking route…')
     state.destination = title
     state.path = []
     state.maneuver = 'Calculating walking route'
     state.rerouting = true
     try {
       const waypoint = place ? { title, placeId: place.placeId }
-        : parts.length === 2 ? { title, position: { lat, lng } } : { placeId: title }
+        : parts.length === 2 ? { title, position: { lat, lng } } : { title, placeId: title }
       const result = await controller.setDestinations([waypoint], { routingOptions: { travelMode: TravelMode.WALKING } })
       if (result !== RouteStatus.OK) throw new Error(`Walking route unavailable: ${result}`)
       if (!state.alive) return
@@ -227,46 +233,50 @@ function WalkingRoute({ onRoute, siriDestination }: GoogleRouteProps) {
       if (!state.alive || !state.active) return
       setGuiding(true)
       setStatus('')
-      nativeDepth?.announceRoute?.(place?.label ?? null)
+      try {
+        nativeDepth?.announceRoute?.(place?.label ?? null)
+      } catch (error) {
+        console.warn('Route started, but the announcement could not play.', error)
+      }
       if (state.maneuver === 'Calculating walking route') state.maneuver = 'Waiting for the next maneuver'
       onRoute({ source: 'google', status: 'guiding', destination: title,
         maneuver: state.maneuver, desiredHeading: null, updatedAtMs: state.locationAtMs })
       const request = ++state.request
-      const segment = await controller.getCurrentRouteSegment().catch(() => null)
-      if (state.active && request === state.request) {
+      void controller.getCurrentRouteSegment().then(segment => {
+        if (!state.active || request !== state.request) return
         state.path = segment?.segmentLatLngList ?? []
         state.rerouting = state.path.length < 2
         const bearing = state.location ? routeBearing(state.location, state.path) : null
         onRoute({ source: 'google', status: state.rerouting ? 'rerouting' : 'guiding',
           destination: title, maneuver: state.maneuver, desiredHeading: null, trueBearing: bearing ?? undefined,
           updatedAtMs: state.locationAtMs })
-      }
+      }).catch(() => {})
     } catch (error) {
       state.active = false
+      setGuiding(false)
       onRoute(null)
       setStatus(error instanceof Error ? error.message : 'Could not start walking guidance.')
-    } finally { setBusy(false) }
+    } finally { working.current = false; setBusy(false) }
   }
 
   async function stop() {
+    if (working.current) return
+    working.current = true
+    setBusy(true)
     session.current.active = false
     onRoute(null)
     setGuiding(false)
     try { await controller.stopGuidance(); setStatus('Walking navigation stopped.') }
     catch { setStatus('The Google navigation session could not stop cleanly.') }
+    finally { working.current = false; setBusy(false) }
   }
 
-  return <View style={{ gap: 10 }}>
-    {nativeDepth?.setSiriAutoStart && <View style={styles.siriSetting}>
-      <Text style={styles.label}>Start Siri routes automatically</Text>
-      <Switch accessibilityLabel="Start Siri routes automatically" value={autoStart} onValueChange={enabled => {
-        nativeDepth?.setSiriAutoStart?.(enabled)
-        setAutoStart(enabled)
-        if (!enabled) setAutoPlace(null)
-      }} />
-    </View>}
-    {status ? <Text style={styles.muted}>{status}</Text> : null}
-    {!initialized ? <Button title="Enable Google Navigation" disabled={busy} onPress={() => void connect()} /> : <>
+  return <View style={{ gap: 12 }}>
+    {status ? <Text accessibilityLiveRegion="polite" style={styles.muted}>{status}</Text> : null}
+    {!initialized ? <ActionButton primary label={busy ? 'Setting up navigation…' : 'Enable Google Navigation'}
+      disabled={busy} onPress={() => void connect()} /> : <>
+      {!guiding && <>
+      <Text style={styles.label}>Destination</Text>
       <TextInput accessibilityLabel="Walking destination" placeholder={manual ? 'Latitude, longitude or Place ID' : 'Search a place or address'}
         placeholderTextColor="#aab9c9" value={destination} editable={!guiding && !busy}
         autoCapitalize={manual ? 'none' : 'sentences'} returnKeyType={manual ? 'done' : 'search'}
@@ -278,25 +288,44 @@ function WalkingRoute({ onRoute, siriDestination }: GoogleRouteProps) {
       </View>}
       {searchStatus ? <Text accessibilityLiveRegion="polite" style={styles.muted}>{searchStatus}</Text> : null}
       {autoPlace && !locationReady && <Text style={styles.muted}>Waiting for your location…</Text>}
-      {!guiding && nativeDepth?.searchPlaces && <Pressable accessibilityRole="button" disabled={busy}
-        onPress={() => { editDestination(''); setManual(!manual) }}>
-        <Text style={styles.switchMode}>{manual ? 'Search by name or address' : 'Enter coordinates or Place ID'}</Text>
-      </Pressable>}
-      <Button title={guiding ? 'Stop walking guidance' : 'Start walking guidance'}
+      </>}
+      <ActionButton primary label={guiding ? 'End walk' : 'Start walk'}
+        hint={guiding ? 'Stops navigation to your destination' : 'Starts Google turn-by-turn walking directions to the selected destination'}
         disabled={busy || (!guiding && (manual ? !destination.trim() : !selected))}
         onPress={() => void (guiding ? stop() : start())} />
-      {guiding && <NavigationView style={{ height: 240 }} />}
+    </>}
+    {!guiding && (nativeDepth?.setSiriAutoStart || nativeDepth?.searchPlaces) && <>
+      <Pressable accessibilityRole="button" accessibilityState={{ expanded: showOptions }}
+        style={styles.optionButton} onPress={() => setShowOptions(!showOptions)}>
+        <Text style={styles.optionText}>{showOptions ? 'Hide route options' : 'Route options'}</Text>
+      </Pressable>
+      {showOptions && <>
+        {nativeDepth?.setSiriAutoStart && <View style={styles.siriSetting}>
+          <Text style={[styles.label, styles.settingLabel]}>Start Siri routes automatically</Text>
+          <Switch accessibilityLabel="Start Siri routes automatically" value={autoStart} onValueChange={enabled => {
+            nativeDepth?.setSiriAutoStart?.(enabled)
+            setAutoStart(enabled)
+            if (!enabled) setAutoPlace(null)
+          }} />
+        </View>}
+        {initialized && nativeDepth?.searchPlaces && <ActionButton disabled={busy}
+          label={manual ? 'Search by name or address' : 'Enter coordinates or Place ID'}
+          onPress={() => { editDestination(''); setManual(!manual) }} />}
+      </>}
     </>}
   </View>
 }
 
 const styles = StyleSheet.create({
-  muted: { color: '#aab9c9' },
-  input: { color: '#edf5fa', borderWidth: 1, borderColor: '#32404c', padding: 10 },
+  muted: { color: '#c8d8e2', fontFamily: mono, fontSize: 17 },
+  input: { color: '#f5fafc', fontFamily: mono, fontSize: 18, minHeight: 54, borderWidth: 1, borderColor: '#728795',
+    backgroundColor: '#090b0e', paddingHorizontal: 14, paddingVertical: 12 },
   suggestions: { borderWidth: 1, borderColor: '#32404c', backgroundColor: '#121a21' },
-  suggestion: { padding: 10, borderBottomWidth: 1, borderColor: '#32404c' },
-  label: { color: '#edf5fa' },
+  suggestion: { minHeight: 52, justifyContent: 'center', padding: 12, borderBottomWidth: 1, borderColor: '#728795' },
+  label: { color: '#f5fafc', fontFamily: mono, fontSize: 17 },
   attribution: { color: '#aab9c9', fontSize: 12, textAlign: 'right', padding: 8 },
-  switchMode: { color: '#9dd9e8', paddingVertical: 5 },
-  siriSetting: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 8 },
+  optionButton: { minHeight: 48, justifyContent: 'center' },
+  optionText: { color: '#a7edff', fontFamily: mono, fontSize: 17, fontWeight: '600' },
+  siriSetting: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 8, minHeight: 48 },
+  settingLabel: { flex: 1 },
 })
