@@ -15,3 +15,6 @@ credentials.json
 .DS_Store
 *.mlpackage/
 *.mlmodelc/
+!/modules/navigation-depth/ios/Models/GlassSegmentation.mlpackage/
+!/modules/navigation-depth/ios/Models/StairSegmentation.mlpackage/
+!/modules/navigation-depth/ios/Models/PersonDetection.mlpackage/

@@ -4,10 +4,12 @@ import { Platform } from 'react-native'
 import type { Telemetry } from '../shared/contracts'
 
 export function telemetrySummary(frame: Telemetry, sharePoints = false): Telemetry {
+  const { modelPreview, ...summary } = frame
   const { depth: _depth, pose: _pose, forwardTrueHeading: _heading, points, pointColors, hazards,
     depthPreview, smoothedDepthPreview, ...observation } = frame.observation
   const { trueBearing: _bearing, updatedAtMs: _updated, ...route } = frame.route
-  return { ...frame, observation: sharePoints ? { ...observation, points, pointColors, hazards, depthPreview, smoothedDepthPreview } : observation,
+  return { ...summary, modelPreview: sharePoints ? modelPreview : undefined,
+    observation: sharePoints ? { ...observation, points, pointColors, hazards, depthPreview, smoothedDepthPreview } : observation,
     route: { ...route, destination: '', maneuver: '' } }
 }
 

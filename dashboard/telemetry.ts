@@ -11,6 +11,27 @@ function validPreview(preview: unknown) {
     /^[A-Za-z0-9+/]+={0,2}$/.test(samples) && Buffer.from(samples, 'base64').length === bytes
 }
 
+function validModelPreview(preview: unknown) {
+  if (preview === undefined) return true
+  if (!preview || typeof preview !== 'object') return false
+  const { timeMs, latencyMs, models, masks, people } = preview as import('../shared/contracts').ModelPreview
+  const point = (value: unknown) => Array.isArray(value) && value.length === 3 &&
+    value.every(n => Number.isFinite(n) && Math.abs(n) <= 10)
+  return Number.isFinite(timeMs) && Number.isFinite(latencyMs) && latencyMs >= 0 &&
+    !!models && ['glass', 'stairs', 'person'].every(kind => typeof models[kind as keyof typeof models] === 'string' &&
+      models[kind as keyof typeof models].length <= 180) &&
+    Array.isArray(masks) && masks.length <= 2 && masks.every(mask => mask && ['glass', 'stairs'].includes(mask.kind) &&
+      mask.size === 96 && typeof mask.labels === 'string' && mask.labels.length === 12_288 &&
+      /^[A-Za-z0-9+/]+$/.test(mask.labels) && Array.isArray(mask.points) &&
+      mask.points.length <= 576 && mask.points.every(point)) &&
+    Array.isArray(people) && people.length <= 16 && people.every(person => person &&
+      Array.isArray(person.box) && person.box.length === 4 &&
+      person.box.every(n => Number.isFinite(n) && n >= 0 && n <= 1) &&
+      Number.isFinite(person.confidence) && person.confidence >= 0 && person.confidence <= 1 &&
+      (person.position === undefined || point(person.position)) &&
+      (person.predictedPosition === undefined || point(person.predictedPosition)))
+}
+
 export function telemetryRelay(token: string | undefined): Plugin {
   let latest: { receivedAt: number; frame: unknown } | null = null
   return {
@@ -35,7 +56,7 @@ export function telemetryRelay(token: string | undefined): Plugin {
         request.setEncoding('utf8')
         request.on('data', chunk => {
           body += chunk
-          if (body.length > 540_000) request.destroy()
+          if (body.length > 650_000) request.destroy()
         })
         request.on('end', () => {
           try {
@@ -53,6 +74,7 @@ export function telemetryRelay(token: string | undefined): Plugin {
               grid?.width !== 40 || grid.height !== 20 || !Array.isArray(grid.cells) || grid.cells.length !== 800 ||
               observation.depth !== undefined || observation.pose !== undefined || !validPoints || !validColors ||
               !validPreview(observation.depthPreview) || !validPreview(observation.smoothedDepthPreview) ||
+              !validModelPreview(frame.modelPreview) ||
               (observation.hazards !== undefined && !validHazards(observation.hazards)) ||
               !Array.isArray(frame.command?.motors) || frame.command.motors.length !== 5 || !frame.route || !frame.belt) {
               response.writeHead(400).end()

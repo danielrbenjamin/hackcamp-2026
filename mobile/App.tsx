@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ComponentRef } from 'react'
 import { AccessibilityInfo, AppState, Platform, ScrollView, StyleSheet, Text, TextInput, useWindowDimensions, View } from 'react-native'
-import { ZONE_NAMES, type BeltStatus, type Route, type Telemetry } from '../shared/contracts'
+import { ZONE_NAMES, type BeltStatus, type ModelPreview, type Route, type Telemetry } from '../shared/contracts'
 import { createLoop } from '../shared/guidance'
 import { LANTERN_BANNER } from '../shared/lantern'
 import { createMock, emptyObservation, scenarios, type Scenario } from '../shared/mock'
@@ -45,6 +45,9 @@ export default function App() {
   const [recordStatus, setRecordStatus] = useState('')
   const [streaming, setStreaming] = useState(false)
   const [sharePoints, setSharePoints] = useState(false)
+  const [previewModels, setPreviewModels] = useState(false)
+  const [modelPreview, setModelPreview] = useState<ModelPreview>()
+  const latestModelPreview = useRef<ModelPreview | undefined>(undefined)
   const [streamStatus, setStreamStatus] = useState('')
   const realBelt = useRef(disconnected)
   const google = useRef<Route | null>(null)
@@ -165,6 +168,21 @@ export default function App() {
   }, [streaming, native, sharePoints])
 
   useEffect(() => {
+    if (!native || !previewModels || !nativeDepth?.previewHazards) return
+    const listener = nativeDepth.addListener('onHazardPreview', preview => {
+      latestModelPreview.current = preview
+      setModelPreview(preview)
+    })
+    nativeDepth.previewHazards(true)
+    return () => {
+      listener.remove()
+      nativeDepth?.previewHazards?.(false)
+      latestModelPreview.current = undefined
+      setModelPreview(undefined)
+    }
+  }, [native, previewModels])
+
+  useEffect(() => {
     if (!streaming || !telemetryUrl || !telemetryToken) return
     const endpoint = `${telemetryUrl.replace(/\/$/, '')}/api/telemetry`
     let request: AbortController | undefined
@@ -178,7 +196,9 @@ export default function App() {
       const timeout = setTimeout(() => request?.abort(), 1_500)
       void fetch(endpoint, { method: 'POST', signal: request.signal,
         headers: { Authorization: `Bearer ${telemetryToken}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify(telemetrySummary(value, native && sharePoints)),
+        body: JSON.stringify(telemetrySummary({
+          ...value, modelPreview: native && previewModels ? latestModelPreview.current : undefined,
+        }, native && sharePoints)),
       }).then(response => {
         if (active) setStreamStatus(response.ok ? 'Streaming to dashboard' : `Dashboard returned ${response.status}`)
       }, () => { if (active) setStreamStatus('Dashboard unreachable') }).finally(() => {
@@ -187,7 +207,7 @@ export default function App() {
       })
     }, 330)
     return () => { active = false; clearInterval(interval); request?.abort() }
-  }, [streaming, native, sharePoints])
+  }, [streaming, native, sharePoints, previewModels])
 
   function stopRecording() {
     recordingActive.current = false
@@ -323,8 +343,12 @@ export default function App() {
           <Text style={styles.value}>{frame?.observation.zones[i]?.toFixed(2) ?? '—'} m</Text>
         </View>)}
         {native && <>
-          <Text style={styles.muted}>{frame?.observation.hazards === undefined
-            ? 'Clearance rules active. Hazard models unavailable.' : 'Clearance and hazard checks active.'}</Text>
+          {nativeDepth?.previewHazards && <SettingSwitch label="Preview hazard models"
+            hint="Shows model results for testing. Guidance still uses LiDAR clearance."
+            value={previewModels} onChange={setPreviewModels} />}
+          {previewModels && <Text style={styles.muted}>{modelPreview
+            ? `Glass: ${modelPreview.models.glass}. Stairs: ${modelPreview.models.stairs}. People: ${modelPreview.models.person}.`
+            : 'Waiting for model previews.'}</Text>}
         </>}
       </View>
       <View style={styles.panel}>

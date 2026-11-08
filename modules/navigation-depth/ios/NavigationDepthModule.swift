@@ -15,7 +15,7 @@ public final class NavigationDepthModule: Module {
 
   public func definition() -> ModuleDefinition {
     Name("NavigationDepth")
-    Events("onObservation", "onStatus", "onBeltStatus", "onSiriDestination")
+    Events("onObservation", "onStatus", "onBeltStatus", "onSiriDestination", "onHazardPreview")
     AsyncFunction("takeSiriDestination") { () -> String? in
       let defaults = UserDefaults.standard
       let key = "lantern.siri.destination"
@@ -86,6 +86,9 @@ public final class NavigationDepthModule: Module {
     Function("previewDepth") { [weak self] (enabled: Bool) in
       DispatchQueue.main.async { self?.sensor.previewing = enabled }
     }
+    Function("previewHazards") { [weak self] (enabled: Bool) in
+      DispatchQueue.main.async { self?.sensor.setHazardPreview(enabled) }
+    }
     OnDestroy { [weak self, sensor = self.sensor, belt = self.belt] in
       self?.removeSiriObserver()
       DispatchQueue.main.async { sensor.stop(); belt.stop() }
@@ -104,9 +107,21 @@ private final class DepthSensor: NSObject, ARSessionDelegate {
   private var runID = 0
   private var lastFrameTime = -Double.infinity
   private var lastDepthTime = -Double.infinity
+  private let hazardModels = HazardModels()
+  private let hazardQueue = DispatchQueue(label: "navigation.hazard-preview", qos: .utility)
+  private var hazardEnabled = false
+  private var hazardGeneration = 0
+  private var hazardPending = false
+  private var lastHazardTime = -Double.infinity
   private var recentHits: [(time: TimeInterval, points: [SIMD2<Float>])] = []
   var recording = false
   var previewing = false
+
+  func setHazardPreview(_ enabled: Bool) {
+    hazardEnabled = enabled
+    hazardGeneration += 1
+    lastHazardTime = -Double.infinity
+  }
 
   func start(emit: @escaping (String, [String: Any]) -> Void) {
     stop()
@@ -150,6 +165,8 @@ private final class DepthSensor: NSObject, ARSessionDelegate {
     session.delegate = self
     lastFrameTime = -Double.infinity
     lastDepthTime = -Double.infinity
+    hazardGeneration += 1
+    lastHazardTime = -Double.infinity
     recentHits.removeAll()
     session.run(config, options: [.resetTracking, .removeExistingAnchors])
     status("running")
@@ -213,10 +230,26 @@ private final class DepthSensor: NSObject, ARSessionDelegate {
     payload["zones"] = zones
     if previewing {
       payload["points"] = points
-      payload["pointColors"] = samplePointColors(frame.capturedImage, pixels: pointPixels)
+      payload["pointColors"] = sampleCameraRGB(frame.capturedImage, pixels: pointPixels)?.base64EncodedString()
     }
     payload["grid"] = ["width": 40, "height": 20, "cellM": 0.25, "cells": cells] as [String: Any]
     emit("onObservation", payload)
+    if hazardEnabled, !hazardPending, frame.timestamp - lastHazardTime >= 0.65,
+       case .normal = frame.camera.trackingState {
+      hazardPending = true
+      lastHazardTime = frame.timestamp
+      let generation = hazardGeneration
+      let run = runID
+      hazardQueue.async { [weak self, hazardModels = self.hazardModels] in
+        let result = hazardModels.preview(frame, timeMs: timestamp, session: generation)
+        DispatchQueue.main.async {
+          guard let self else { return }
+          self.hazardPending = false
+          guard self.runID == run, self.hazardEnabled, self.hazardGeneration == generation else { return }
+          self.emit?("onHazardPreview", result)
+        }
+      }
+    }
   }
 
   private func retainRecentHits(pose: simd_float4x4, forward: SIMD2<Float>, time: TimeInterval, cells: inout [Int]) {
@@ -362,42 +395,6 @@ private final class DepthSensor: NSObject, ARSessionDelegate {
       "intrinsics": [intrinsics[0][0] / scaleX / 8, intrinsics[1][1] / scaleY / 8,
                      (intrinsics[2][0] / scaleX - 0.5) / 8, (intrinsics[2][1] / scaleY - 0.5) / 8],
     ]
-  }
-
-  private func samplePointColors(_ image: CVPixelBuffer, pixels: [SIMD2<Float>]) -> String? {
-    let format = CVPixelBufferGetPixelFormatType(image)
-    let fullRange = format == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
-    guard !pixels.isEmpty, fullRange || format == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
-          CVPixelBufferGetPlaneCount(image) == 2,
-          CVPixelBufferLockBaseAddress(image, .readOnly) == kCVReturnSuccess else { return nil }
-    defer { CVPixelBufferUnlockBaseAddress(image, .readOnly) }
-    guard let luma = CVPixelBufferGetBaseAddressOfPlane(image, 0),
-          let chroma = CVPixelBufferGetBaseAddressOfPlane(image, 1) else { return nil }
-    let width = CVPixelBufferGetWidthOfPlane(image, 0)
-    let height = CVPixelBufferGetHeightOfPlane(image, 0)
-    let chromaWidth = CVPixelBufferGetWidthOfPlane(image, 1)
-    let chromaHeight = CVPixelBufferGetHeightOfPlane(image, 1)
-    let lumaStride = CVPixelBufferGetBytesPerRowOfPlane(image, 0)
-    let chromaStride = CVPixelBufferGetBytesPerRowOfPlane(image, 1)
-    var rgb = Data()
-    rgb.reserveCapacity(pixels.count * 3)
-    func channel(_ value: Float) -> UInt8 { UInt8(min(255, max(0, value.rounded()))) }
-    for uv in pixels {
-      let x = Int(uv.x * Float(width))
-      let y = Int(uv.y * Float(height))
-      let chromaX = Int(uv.x * Float(chromaWidth))
-      let chromaY = Int(uv.y * Float(chromaHeight))
-      let chromaOffset = chromaY * chromaStride + chromaX * 2
-      let rawY = Float(luma.load(fromByteOffset: y * lumaStride + x, as: UInt8.self))
-      let scale: Float = fullRange ? 1 : 255 / 224
-      let cb = (Float(chroma.load(fromByteOffset: chromaOffset, as: UInt8.self)) - 128) * scale
-      let cr = (Float(chroma.load(fromByteOffset: chromaOffset + 1, as: UInt8.self)) - 128) * scale
-      let lumaValue = fullRange ? rawY : (rawY - 16) * 255 / 219
-      rgb.append(channel(lumaValue + 1.402 * cr))
-      rgb.append(channel(lumaValue - 0.344136 * cb - 0.714136 * cr))
-      rgb.append(channel(lumaValue + 1.772 * cb))
-    }
-    return rgb.base64EncodedString()
   }
 
   private func cell(_ lateral: Float, _ ahead: Float) -> Int? {

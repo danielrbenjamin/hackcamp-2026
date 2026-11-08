@@ -42,12 +42,13 @@ function frontBounds(points: readonly DepthPoint[] | undefined) {
   return { left: x[trim] ?? -0.5, right: x[last] ?? 0.5, bottom: y[trim] ?? -0.4, top: y[last] ?? 0.4 }
 }
 
-export function PointCloud({ points, pointColors, heading, hazards, phone }: {
+export function PointCloud({ points, pointColors, heading, hazards, phone, colorLabel }: {
   points: readonly DepthPoint[] | undefined
   pointColors?: string
   heading: Heading | null
   hazards?: readonly Hazard[]
   phone: boolean
+  colorLabel?: string
 }) {
   const [yaw, setYaw] = useState(-27)
   const [tilt, setTilt] = useState(36)
@@ -141,7 +142,7 @@ export function PointCloud({ points, pointColors, heading, hazards, phone }: {
       </svg>}
       <CloudCanvas vertices={vertexData.subarray(0, offset)} frameWidth={frameWidth} onFallback={setFallback} />
       <svg viewBox={viewBox} className="cloud" role="img"
-        aria-label={hasCameraColor ? '3D LiDAR points with camera colors' : '3D LiDAR points colored by relative height'}>
+        aria-label={colorLabel ?? (hasCameraColor ? '3D LiDAR points with camera colors' : '3D LiDAR points colored by relative height')}>
         {[...layers].map(([color, path]) => <path key={color} d={path} fill="none" stroke={color} strokeWidth="2.1" />)}
         {orbit && axes.map(({ label, end, color }) => <g key={label}>
           <path d={`M${origin}L${end}`} stroke={color} />
@@ -164,10 +165,10 @@ export function PointCloud({ points, pointColors, heading, hazards, phone }: {
       </svg>
       <div className="scan-label">{phone ? 'ARKIT' : 'SIM'} / {points?.length ?? 0} points
         {fallback ? ' / SVG fallback' : ''}</div>
-      {!points?.length && <p className="scan-empty">{!phone || points ? 'No depth returns' : 'Enable 3D scan sharing on the iPhone'}</p>}
+      {!points?.length && !hazards?.length && <p className="scan-empty">{!phone || points ? 'No depth returns' : 'Enable 3D scan sharing on the iPhone'}</p>}
     </div>
     <div className="legend">
-      {hasCameraColor ? <span>Camera color</span>
+      {colorLabel ? <span>{colorLabel}</span> : hasCameraColor ? <span>Camera color</span>
         : <span><i className="height-scale" />Height relative to phone</span>}
       <div className="scan-modes">
         <button aria-pressed={!angled} onClick={() => setAngled(false)}>Front</button>

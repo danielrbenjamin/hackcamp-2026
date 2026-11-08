@@ -6,6 +6,7 @@ import { createMock, scenarios, type Scenario } from '../shared/mock'
 import { LANTERN_BANNER } from '../shared/lantern'
 import { PointCloud, simulatedPoints } from './PointCloud'
 import { DepthImages } from './DepthImages'
+import { ModelPreview } from './ModelPreview'
 import './style.css'
 
 const cueLabels = { idle: 'Waiting for guidance', direction: 'Directional cue', obstacle: 'Obstacle warning', unavailable: 'Depth unavailable' }
@@ -21,7 +22,7 @@ function Dashboard() {
   const [tokenInput, setTokenInput] = useState('')
   const [token, setToken] = useState('')
   const [link, setLink] = useState('')
-  const [mapView, setMapView] = useState<'cloud' | 'grid' | 'depth'>('cloud')
+  const [mapView, setMapView] = useState<'cloud' | 'grid' | 'depth' | 'models'>('cloud')
   const [evaluation, setEvaluation] = useState<Evaluation>()
   const [evaluationError, setEvaluationError] = useState('')
   const [events, setEvents] = useState<{ time: number; text: string }[]>([])
@@ -169,9 +170,11 @@ function Dashboard() {
             <button aria-pressed={mapView === 'cloud'} onClick={() => setMapView('cloud')}><span aria-hidden="true">[+]</span> 3D scan</button>
             <button aria-pressed={mapView === 'grid'} onClick={() => setMapView('grid')}><span aria-hidden="true">[#]</span> Occupancy grid</button>
             <button aria-pressed={mapView === 'depth'} onClick={() => setMapView('depth')}>Depth & confidence</button>
+            <button aria-pressed={mapView === 'models'} onClick={() => setMapView('models')}>Model preview</button>
           </div>
           <div className="viewport">
-            {mapView === 'depth' ? <DepthImages observation={observation} />
+            {mapView === 'models' ? <ModelPreview preview={frame?.modelPreview} />
+              : mapView === 'depth' ? <DepthImages observation={observation} />
               : !grid || !observation ? <p className="waiting">{link || 'Waiting for depth data'}</p>
               : mapView === 'cloud' ? <PointCloud points={observation.source === 'simulated' ? simulatedPoints(grid) : observation.points}
                 heading={heading} hazards={detections} phone={observation.source === 'arkit'}

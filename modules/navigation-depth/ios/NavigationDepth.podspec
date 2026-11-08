@@ -17,9 +17,10 @@ Pod::Spec.new do |s|
     requirement: { kind: 'exactVersion', version: '11.2.0' },
     products: ['GooglePlaces']
   )
-  s.frameworks = 'ARKit', 'AVFoundation', 'CoreVideo', 'CoreBluetooth', 'CoreML'
-  unless Dir.glob(File.join(__dir__, 'Models/Traversability.{mlmodelc,mlpackage}')).empty?
-    s.resource_bundles = { 'NavigationModels' => ['Models/Traversability.{mlmodelc,mlpackage}'] }
+  s.frameworks = 'ARKit', 'AVFoundation', 'CoreVideo', 'CoreBluetooth', 'CoreML', 'Vision'
+  packages = 'Models/{Traversability,GlassSegmentation,StairSegmentation,PersonDetection}.{mlmodelc,mlpackage}'
+  unless Dir.glob(File.join(__dir__, packages)).empty?
+    s.resource_bundles = { 'NavigationModels' => [packages] }
   end
   s.source_files = '**/*.swift'
 end

@@ -13,6 +13,14 @@ export interface DepthPreview {
   // The high two bits are ARKit confidence.
   samples: string
 }
+
+export interface ModelPreview {
+  timeMs: number
+  latencyMs: number
+  models: Record<'glass' | 'stairs' | 'person', string>
+  masks: { kind: 'glass' | 'stairs'; size: number; labels: string; points: readonly DepthPoint[] }[]
+  people: { box: readonly [number, number, number, number]; confidence: number; position?: DepthPoint; predictedPosition?: DepthPoint }[]
+}
 export const MAX_HAZARDS = 32
 export const HAZARD_LABELS = { stairs: 'Possible descending stairs', glass: 'Possible glass', person: 'Person' } as const
 
@@ -84,6 +92,7 @@ export interface MotorCommand {
 }
 
 export interface Telemetry {
+  modelPreview?: ModelPreview
   schemaVersion: 1
   observation: Observation
   prediction: Prediction | null

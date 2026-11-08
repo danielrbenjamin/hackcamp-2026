@@ -53,9 +53,11 @@ With **Share 3D scan with dashboard** on, **Depth & confidence** shows distance 
 
 Google computes the walking route. Lantern tests nine local corridors from −60° to +60° against LiDAR clearance and frame-aligned hazard detections, then favors directions that follow the route and stay consistent with the previous cue. If hazards eliminate all eligible directions, Lantern withholds the direction cue. The raw LiDAR reflex continues to handle immediate obstacles.
 
-The app and dashboard accept simulated stair, glass, and pedestrian detections. Live iPhone mode uses the clearance baseline while the three Core ML packages and their input/output specifications are pending. Existing session exports contain depth and pose. Training with camera frames requires a separate consented RGB export.
+The three selected packages, `GlassSegmentation.mlpackage`, `StairSegmentation.mlpackage`, and `PersonDetection.mlpackage`, belong in `modules/navigation-depth/ios/Models/` and can be tracked by Git. If the iOS project already exists, run `pod install` from root `ios/` to update its model resources, then run `npm run ios` from the repo root.
 
-Model adapters should attach detections to the matching observation in `shared/contracts.ts`. Use phone-relative metres for a located hazard and a bearing range when depth is unavailable. For a person, an optional predicted position is the end of a short path in the same coordinate frame. Reproject delayed detections into the current observation before using them. Only opt-in 3D scan sharing sends hazard locations to the dashboard.
+On the iPhone, select **Use iPhone LiDAR → Testing and data tools → Preview hazard models**. With dashboard and 3D scan sharing enabled, select **Model preview** in the dashboard to see the masks, person boxes, and 3D detections. Inference runs on-device using RGB and depth from the same ARKit frame. Only the diagnostic results are shared. Live belt guidance stays on the clearance baseline.
+
+Glass uses the supplied ImageNet and valid-depth p99 transform. The stair preview preserves camera aspect ratio with zero padding, then uses 384 × 384 bilinear sampling, ImageNet RGB normalization, and valid-depth p1/p99 clipping followed by `(depth - 0.5) / 0.25` after scaling depth to 0–1. Sampled training images confirm that larger encoded values represent farther surfaces, as with iPhone depth in metres. A depth return within a glass mask may belong to the background. Pedestrian trajectories use short-range nearest-neighbor association in ARKit world coordinates and a 0.6-second constant-velocity prediction. Verify model alignment, false detections, and latency on a stationary iPhone before any navigation integration.
 
 ### Earlier traversability experiment
 
