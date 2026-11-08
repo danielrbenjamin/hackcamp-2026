@@ -15,7 +15,7 @@ public final class NavigationDepthModule: Module {
 
   public func definition() -> ModuleDefinition {
     Name("NavigationDepth")
-    Events("onObservation", "onStatus", "onBeltStatus", "onSiriDestination", "onHazardPreview")
+    Events("onObservation", "onStatus", "onBeltStatus", "onSiriDestination", "onHazardPreview", "onHazardPreviewStatus")
     AsyncFunction("takeSiriDestination") { () -> String? in
       let defaults = UserDefaults.standard
       let key = "lantern.siri.destination"
@@ -112,6 +112,7 @@ private final class DepthSensor: NSObject, ARSessionDelegate {
   private var hazardEnabled = false
   private var hazardGeneration = 0
   private var hazardPending = false
+  private var firstHazardPreview = true
   private var lastHazardTime = -Double.infinity
   private var recentHits: [(time: TimeInterval, points: [SIMD2<Float>])] = []
   var recording = false
@@ -121,6 +122,8 @@ private final class DepthSensor: NSObject, ARSessionDelegate {
     hazardEnabled = enabled
     hazardGeneration += 1
     lastHazardTime = -Double.infinity
+    firstHazardPreview = true
+    if enabled { emit?("onHazardPreviewStatus", ["message": "Waiting for ARKit tracking"]) }
   }
 
   func start(emit: @escaping (String, [String: Any]) -> Void) {
@@ -167,6 +170,7 @@ private final class DepthSensor: NSObject, ARSessionDelegate {
     lastDepthTime = -Double.infinity
     hazardGeneration += 1
     lastHazardTime = -Double.infinity
+    firstHazardPreview = true
     recentHits.removeAll()
     session.run(config, options: [.resetTracking, .removeExistingAnchors])
     status("running")
@@ -240,12 +244,21 @@ private final class DepthSensor: NSObject, ARSessionDelegate {
       lastHazardTime = frame.timestamp
       let generation = hazardGeneration
       let run = runID
+      let reportProgress = firstHazardPreview
+      if reportProgress { emit("onHazardPreviewStatus", ["message": "Preparing the first model preview"]) }
       hazardQueue.async { [weak self, hazardModels = self.hazardModels] in
-        let result = hazardModels.preview(frame, timeMs: timestamp, session: generation)
+        let result = hazardModels.preview(frame, timeMs: timestamp, session: generation) { message in
+          guard reportProgress else { return }
+          DispatchQueue.main.async { [weak self] in
+            guard let self, self.runID == run, self.hazardEnabled, self.hazardGeneration == generation else { return }
+            self.emit?("onHazardPreviewStatus", ["message": message])
+          }
+        }
         DispatchQueue.main.async {
           guard let self else { return }
           self.hazardPending = false
           guard self.runID == run, self.hazardEnabled, self.hazardGeneration == generation else { return }
+          self.firstHazardPreview = false
           self.emit?("onHazardPreview", result)
         }
       }

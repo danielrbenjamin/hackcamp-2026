@@ -47,6 +47,7 @@ export default function App() {
   const [sharePoints, setSharePoints] = useState(false)
   const [previewModels, setPreviewModels] = useState(false)
   const [modelPreview, setModelPreview] = useState<ModelPreview>()
+  const [modelProgress, setModelProgress] = useState('')
   const latestModelPreview = useRef<ModelPreview | undefined>(undefined)
   const [streamStatus, setStreamStatus] = useState('')
   const realBelt = useRef(disconnected)
@@ -173,12 +174,15 @@ export default function App() {
       latestModelPreview.current = preview
       setModelPreview(preview)
     })
+    const progress = nativeDepth.addListener('onHazardPreviewStatus', event => setModelProgress(event.message))
     nativeDepth.previewHazards(true)
     return () => {
       listener.remove()
+      progress.remove()
       nativeDepth?.previewHazards?.(false)
       latestModelPreview.current = undefined
       setModelPreview(undefined)
+      setModelProgress('')
     }
   }, [native, previewModels])
 
@@ -348,7 +352,8 @@ export default function App() {
             value={previewModels} onChange={setPreviewModels} />}
           {previewModels && <Text style={styles.muted}>{modelPreview
             ? `Glass: ${modelPreview.models.glass}. Stairs: ${modelPreview.models.stairs}. People: ${modelPreview.models.person}.`
-            : 'Waiting for model previews.'}</Text>}
+            : status !== 'running' ? `Waiting for iPhone LiDAR (${status}).`
+              : modelProgress ? `${modelProgress}…` : 'Waiting for the first model result from the iPhone.'}</Text>}
         </>}
       </View>
       <View style={styles.panel}>

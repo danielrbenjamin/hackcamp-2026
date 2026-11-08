@@ -13,6 +13,7 @@ interface Events {
   onBeltStatus: BeltStatus & { state: string }
   onSiriDestination: Record<string, never>
   onHazardPreview: ModelPreview
+  onHazardPreviewStatus: { message: string }
 }
 
 interface DepthModule {

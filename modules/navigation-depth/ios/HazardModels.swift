@@ -114,7 +114,7 @@ final class HazardModels {
     return loaded
   }
 
-  func preview(_ frame: ARFrame, timeMs: Double, session: Int) -> [String: Any] {
+  func preview(_ frame: ARFrame, timeMs: Double, session: Int, progress: (String) -> Void) -> [String: Any] {
     let started = ProcessInfo.processInfo.systemUptime
     let depth = frame.sceneDepth.flatMap(DepthSamples.init)
     var status: [String: String] = [:]
@@ -123,7 +123,9 @@ final class HazardModels {
       if let error = unavailable[kind] { status[kind] = error; continue }
       do {
         guard let depth else { throw ModelError.noDepth }
+        progress("Loading \(kind) model")
         let loaded = try model(name)
+        progress("Running \(kind) model")
         let input = try tensor(frame.capturedImage, depth: depth, size: size, channels: channels)
         let features = try MLDictionaryFeatureProvider(dictionary: ["rgbd": MLFeatureValue(multiArray: input)])
         let prediction = try loaded.prediction(from: features)
@@ -142,6 +144,7 @@ final class HazardModels {
     if let error = unavailable["person"] { status["person"] = error }
     else {
       do {
+        progress("Running person model")
         people = try detectPeople(frame, depth: depth, session: session)
         status["person"] = "Preview"
       } catch {
