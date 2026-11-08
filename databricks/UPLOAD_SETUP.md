@@ -1,5 +1,7 @@
 # Automatic ML ZIP upload to the Lakehouse
 
+To run the server on another laptop, use [LAPTOP_SETUP.md](LAPTOP_SETUP.md). It includes the local upload tests, guided setup, configuration check and fixed-port launcher.
+
 The implemented path is:
 
 **Stop ML recording → persistent iPhone upload queue → HTTPS upload server → Unity Catalog exports/ → file-arrival job → stage ZIPs → Lakehouse notebook.**
