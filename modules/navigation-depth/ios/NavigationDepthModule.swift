@@ -245,21 +245,24 @@ private final class DepthSensor: NSObject, ARSessionDelegate {
       let generation = hazardGeneration
       let run = runID
       let reportProgress = firstHazardPreview
+      let backdrop = payload["depthPreview"] as? [String: Any]
       if reportProgress { emit("onHazardPreviewStatus", ["message": "Preparing the first model preview"]) }
       hazardQueue.async { [weak self, hazardModels = self.hazardModels] in
-        let result = hazardModels.preview(frame, timeMs: timestamp, session: generation) { message in
+        var result = hazardModels.preview(frame, timeMs: timestamp, session: generation) { message in
           guard reportProgress else { return }
           DispatchQueue.main.async { [weak self] in
             guard let self, self.runID == run, self.hazardEnabled, self.hazardGeneration == generation else { return }
             self.emit?("onHazardPreviewStatus", ["message": message])
           }
         }
+        result["depthPreview"] = backdrop
+        let preview = result
         DispatchQueue.main.async {
           guard let self else { return }
           self.hazardPending = false
           guard self.runID == run, self.hazardEnabled, self.hazardGeneration == generation else { return }
           self.firstHazardPreview = false
-          self.emit?("onHazardPreview", result)
+          self.emit?("onHazardPreview", preview)
         }
       }
     }

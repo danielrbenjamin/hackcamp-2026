@@ -14,10 +14,10 @@ function validPreview(preview: unknown) {
 function validModelPreview(preview: unknown) {
   if (preview === undefined) return true
   if (!preview || typeof preview !== 'object') return false
-  const { timeMs, latencyMs, models, masks, people } = preview as import('../shared/contracts').ModelPreview
+  const { timeMs, latencyMs, models, masks, people, depthPreview } = preview as import('../shared/contracts').ModelPreview
   const point = (value: unknown) => Array.isArray(value) && value.length === 3 &&
     value.every(n => Number.isFinite(n) && Math.abs(n) <= 10)
-  return Number.isFinite(timeMs) && Number.isFinite(latencyMs) && latencyMs >= 0 &&
+  return validPreview(depthPreview) && Number.isFinite(timeMs) && Number.isFinite(latencyMs) && latencyMs >= 0 &&
     !!models && ['glass', 'stairs', 'person'].every(kind => typeof models[kind as keyof typeof models] === 'string' &&
       models[kind as keyof typeof models].length <= 180) &&
     Array.isArray(masks) && masks.length <= 2 && masks.every(mask => mask && ['glass', 'stairs'].includes(mask.kind) &&
@@ -56,7 +56,7 @@ export function telemetryRelay(token: string | undefined): Plugin {
         request.setEncoding('utf8')
         request.on('data', chunk => {
           body += chunk
-          if (body.length > 650_000) request.destroy()
+          if (body.length > 840_000) request.destroy()
         })
         request.on('end', () => {
           try {
