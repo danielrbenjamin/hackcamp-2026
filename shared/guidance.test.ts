@@ -34,6 +34,16 @@ test('close valid returns still warn when other zones are unknown', () => {
   assert.equal(reflex(observation, now), 'obstacle')
 })
 
+test('close side returns stay out of the reflex warning but constrain side guidance', () => {
+  const now = 1_000
+  const { providers } = createMock()
+  const observation = { ...providers.lidar(), timeMs: now, zones: [null, 0.4, 2, 0.4, null] as const }
+  assert.equal(reflex(observation, now), 'clear')
+  assert.equal(selectHeading(observation, { ...providers.navigation(), desiredHeading: -30 }, null), 0)
+  assert.equal(selectHeading(observation, { ...providers.navigation(), desiredHeading: 30 }, null), 0)
+  assert.equal(reflex({ ...observation, zones: [null, 0.4, null, 0.4, null] }, now), 'unknown')
+})
+
 test('heading selector rejects unknown clearance and motion outside the candidate envelope', () => {
   const { providers } = createMock()
   assert.equal(selectHeading(emptyObservation(), providers.navigation(), null), null)
@@ -55,18 +65,18 @@ test('stairs block forward and a predicted pedestrian crossing blocks forward be
   }
 })
 
-test('unlocated glass warns and suppresses overlapping direction cues independently of the depth reflex', () => {
+test('unlocated glass blocks overlapping headings without issuing a stop warning', () => {
   const mock = createMock()
   mock.setScenario('glass')
   const frame = createLoop(mock.providers).tick()
-  assert.equal(frame.blockedHeadings?.length, 9)
-  assert.equal(frame.heading, null)
-  assert.equal(frame.command.cue, 'obstacle')
-  assert.equal(frame.modelWarning, 'glass')
+  assert.ok(frame.blockedHeadings?.includes(0))
+  assert.notEqual(frame.heading, 0)
+  assert.notEqual(frame.command.cue, 'obstacle')
+  assert.equal(frame.modelWarning, undefined)
   assert.equal(frame.reflex, 'clear')
 })
 
-test('a fresh native glass bearing warns with unknown depth and no route, but expires with the observation', () => {
+test('a native glass bearing cannot escalate unknown depth into a stop warning', () => {
   const { providers } = createMock()
   const now = 1000
   const loop = createLoop({
@@ -77,10 +87,22 @@ test('a fresh native glass bearing warns with unknown depth and no route, but ex
   })
   const fresh = loop.tick(now + 10)
   assert.equal(fresh.reflex, 'unknown')
-  assert.equal(fresh.command.cue, 'obstacle')
-  assert.equal(fresh.modelWarning, 'glass')
+  assert.equal(fresh.command.cue, 'unavailable')
+  assert.equal(fresh.modelWarning, undefined)
   assert.equal(fresh.reflexDispatchMs, undefined)
   assert.equal(loop.tick(now + 601).command.cue, 'unavailable')
+})
+
+test('glass off to the side leaves a clear straight route available', () => {
+  const { providers } = createMock()
+  const frame = createLoop({
+    ...providers,
+    lidar: () => ({ ...providers.lidar(), hazards: [{ kind: 'glass', confidence: 0.9, bearing: [17, 30] }] }),
+    navigation: () => ({ ...providers.navigation(), desiredHeading: 0 }),
+  }).tick()
+  assert.equal(frame.heading, 0)
+  assert.equal(frame.command.cue, 'direction')
+  assert.ok(frame.blockedHeadings?.includes(15))
 })
 
 test('reconnection replays the current warning rather than the old direction', () => {

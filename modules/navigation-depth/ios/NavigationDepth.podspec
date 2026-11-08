@@ -10,6 +10,7 @@ Pod::Spec.new do |s|
   s.source         = { :git => '' }
   s.static_framework = true
   s.swift_version  = '5.9'
+  s.pod_target_xcconfig = { 'SWIFT_OPTIMIZATION_LEVEL' => '-O' }
   s.dependency 'ExpoModulesCore'
   spm_dependency(
     s,

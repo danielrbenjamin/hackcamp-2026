@@ -1,6 +1,17 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { decodeDenseScan, fillScanGaps, scanImagePoint, type ScanFrame } from '../dashboard/denseScan.ts'
+import { decodeDenseScan, fillScanGaps, orientImagePoint, scanDisplayRotation, scanImagePoint, type ScanFrame } from '../dashboard/denseScan.ts'
+
+test('Front display maps gravity up to the top in either portrait orientation', () => {
+  const { scan } = frame(1000, 0, [1, 1, 1])
+  assert.equal(scanDisplayRotation(scan), 0)
+  const clockwise = scanDisplayRotation({ ...scan, basis: [0, -1, 0, 1, 0, 0, 0, 0, 1] })
+  assert.equal(clockwise, 90)
+  assert.deepEqual(orientImagePoint(0.25, 0.5, clockwise), [0.5, 0.25])
+  const counterclockwise = scanDisplayRotation({ ...scan, basis: [0, 1, 0, -1, 0, 0, 0, 0, 1] })
+  assert.equal(counterclockwise, -90)
+  assert.deepEqual(orientImagePoint(0.75, 0.5, counterclockwise), [0.5, 0.25])
+})
 
 test('trajectory projection reverses the pitched camera basis and rejects points behind camera', () => {
   const scan = {

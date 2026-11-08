@@ -1,6 +1,6 @@
 # Lantern
 
-iPhone LiDAR and Google walking directions drive a five-motor ESP32 belt. The dashboard shows scans, guidance, and motor commands.
+iPhone LiDAR and Google walking directions drive an ESP32 belt with three buzzers. The dashboard shows scans, guidance, and belt commands.
 
 ## Run locally
 
@@ -19,7 +19,7 @@ Open the URLs printed by Vite and Expo. Try **Obstacle**, **Sensor dropout**, an
 1. Transfer the repository to a Mac with Xcode 27 and CocoaPods. Run `npm ci`. Connect a LiDAR-equipped iPhone running iOS 17 or later, trust the Mac, enable Developer Mode, and select your Apple signing team.
 2. Enable Navigation SDK for iOS, Maps SDK for iOS, and Places API (New) in a billing-enabled Google Cloud project. Allow those APIs on the key and restrict it to the app's iOS bundle ID. Copy `.env.example` to `.env.local` and set `GOOGLE_MAPS_IOS_API_KEY`. A build without a key can still use simulation and LiDAR.
 3. Run `npx expo prebuild --platform ios --clean` to generate the native project, then `npm run ios`. The clean generation replaces root `ios/`. If signing needs manual setup, open the generated Xcode workspace and choose your team before running. Rebuild after changing the key or native code. For JS-only changes, use `npm run mobile`.
-4. Lantern starts in LiDAR mode on a development iPhone. Allow camera access and hold the rear camera forward about 1.2 m above the floor. With the tester stationary, bring an object within roughly 0.85 m. Check the warning and the five zone readings under **Settings → Advanced**. Cover or interrupt the sensor and verify directional cues stop. Use **Switch to simulation** in Advanced to try the mock scenarios.
+4. Lantern starts in LiDAR mode on a development iPhone. Allow camera access and hold the rear camera forward about 1.2 m above the floor. With the tester stationary, bring an object directly ahead within roughly 0.85 m. The raw LiDAR beep covers the center zone, about 15° either side of the phone’s forward heading. Move the object to either side and check the zone readings under **Settings → Advanced**. Cover or interrupt the sensor and verify directional cues stop. Use **Switch to simulation** in Advanced to try the mock scenarios.
 5. Validate mounting, compass alignment, and depth coverage. Direction cues are enabled by default and require a fresh route and observed clearance. They appear on screen even with the belt disconnected. Tap **Connect belt** to receive them on the hardware, or turn off **Direction cues** to keep obstacle warnings only.
 6. Tap **Enable Google Navigation**, grant location access, and accept the Google dialog. Type or dictate a place name or address, select a suggestion, then tap **Start walk**. Verify the destination, maneuver text, and rerouting on the route card. Google turn-by-turn audio and route-start announcements for manually entered routes are off by default. Use **Route options** to enable either, or choose **Enter coordinates or Place ID** for manual entry.
 
@@ -31,7 +31,7 @@ On the iPhone, tap **Speak Destination**, wait for the vibration, then say a pla
 
 ## Belt bench test
 
-The sample sketch in `firmware/NavigationBelt/` targets a classic ESP32 with Arduino-ESP32 3.x. Confirm the five output pins with the hardware teammate and connect them to motor drivers. Flash the sketch, then tap **Connect belt** on the iPhone. The protocol is also usable from a BLE test client.
+The sketch in `firmware/NavigationBelt/` targets a classic ESP32 with Arduino-ESP32 3.x. The buzzer wiring is left on GPIO 25, front on GPIO 33, and right on GPIO 26. Tap **Connect belt** on the iPhone to test. Tune `directionDuty` and `warningDuty` on the bench so the wearer can hear both cues. The protocol is also usable from a BLE test client.
 
 - Service `08D24000-8CB7-4DAA-AE03-54C7D9655B00`
 - Write-without-response characteristic `08D24001-8CB7-4DAA-AE03-54C7D9655B00`
@@ -66,7 +66,7 @@ The three selected packages, `GlassSegmentation.mlpackage`, `StairSegmentation.m
 
 Hazard models start in iPhone LiDAR mode. **Preview hazard models** under **Settings → Advanced** controls the diagnostic preview and its sharing. With dashboard and 3D scan sharing enabled, use the **Combined overlay**, **Individual models**, or **3D scan overlay** tab.
 
-Fresh model hazards can block a local direction and trigger the belt obstacle pattern when they overlap the forward corridor. Stairs require depth-supported mask points. People use measured positions and a short crossing forecast. Glass uses its image bearing with distance unknown. The phone discards old results and clears them when tracking resets. The independent raw LiDAR warning has priority and continues if models are unavailable. Check the model warning transitions and false alerts on a stationary iPhone before walking with the belt.
+Fresh, depth-supported stair and person detections can block a local direction and trigger the belt obstacle pattern in the forward corridor. People use measured positions and a short crossing forecast. A glass bearing with unknown distance can block overlapping direction cues but does not trigger the obstacle pattern on its own. The phone discards old results and clears them when tracking resets. The independent raw LiDAR warning has priority and continues if models are unavailable. Check the model warning transitions and false alerts on a stationary iPhone before walking with the belt.
 
 **Combined overlay** shows all three model outputs on one depth image. **3D scan overlay** adds the projected detections to the colored point cloud captured with the model frame. Both views use the matching scan even while the live view advances.
 

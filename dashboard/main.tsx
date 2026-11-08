@@ -21,6 +21,8 @@ function Dashboard() {
   const [connected, setConnected] = useState(true)
   const [simulation, setSimulation] = useState<Telemetry>()
   const [phone, setPhone] = useState<Telemetry>()
+  const [phoneStream, setPhoneStream] = useState<string>()
+  const [phoneVisuals, setPhoneVisuals] = useState<{ frame: Telemetry; stream: string } | null>(null)
   const [phoneReceivedAt, setPhoneReceivedAt] = useState<number>()
   const [tokenInput, setTokenInput] = useState('')
   const [token, setToken] = useState('')
@@ -60,9 +62,10 @@ function Dashboard() {
         const response = await fetch('/api/telemetry', { signal: controller.signal,
           headers: { Authorization: `Bearer ${token}` } })
         if (!response.ok) throw new Error(`Relay returned ${response.status}`)
-        const data = await response.json() as { receivedAt: number; frame: Telemetry } | null
+        const data = await response.json() as { receivedAt: number; frame: Telemetry; stream?: string } | null
         if (controller.signal.aborted) return
         if (data) setPhoneReceivedAt(data.receivedAt)
+        setPhoneStream(data?.stream)
         const fresh = data && Date.now() - data.receivedAt < 2_000
         setPhone(fresh ? data.frame : undefined)
         setLink(fresh ? 'Receiving phone telemetry' : 'Waiting for phone telemetry')
@@ -71,13 +74,46 @@ function Dashboard() {
         setPhone(undefined)
         setLink(error instanceof Error ? error.message : 'Relay unavailable')
       }
-      timer = window.setTimeout(poll, 400)
+      timer = window.setTimeout(poll, 120)
     }
     void poll()
     return () => { controller.abort(); window.clearTimeout(timer) }
   }, [token])
 
-  const frame = token ? phone : simulation
+  useEffect(() => {
+    if (!token) return
+    const controller = new AbortController()
+    let timer: number | undefined
+    let etag: string | null = null
+    async function pollVisuals() {
+      try {
+        const headers: Record<string, string> = { Authorization: `Bearer ${token}` }
+        if (etag) headers['If-None-Match'] = etag
+        const response = await fetch('/api/telemetry/visuals', { headers, signal: controller.signal })
+        if (response.ok) {
+          const data = await response.json() as { frame: Telemetry; stream: string } | null
+          if (!controller.signal.aborted) {
+            etag = response.headers.get('ETag')
+            setPhoneVisuals(data)
+          }
+        }
+      } catch { /* The lightweight feed reports connection status separately. */ }
+      if (!controller.signal.aborted) timer = window.setTimeout(pollVisuals, 180)
+    }
+    void pollVisuals()
+    return () => { controller.abort(); window.clearTimeout(timer) }
+  }, [token])
+
+  const visualFrame = phone && phoneStream && phoneVisuals?.stream === phoneStream ? phoneVisuals.frame : undefined
+  const frame = token ? phone && visualFrame ? {
+    ...phone, modelPreview: visualFrame.modelPreview,
+    observation: {
+      ...phone.observation,
+      points: visualFrame.observation.points, pointColors: visualFrame.observation.pointColors,
+      denseScan: visualFrame.observation.denseScan, depthPreview: visualFrame.observation.depthPreview,
+      smoothedDepthPreview: visualFrame.observation.smoothedDepthPreview, hazards: visualFrame.observation.hazards,
+    },
+  } : phone : simulation
   const cueLabel = frame?.modelWarning ? HAZARD_LABELS[frame.modelWarning] : frame ? cueLabels[frame.command.cue] : undefined
   const eventText = frame ? `${cueLabel} · ${frame.belt.connected ? 'belt online' : 'belt offline'}` : null
   const eventTime = frame?.observation.timeMs
@@ -89,6 +125,8 @@ function Dashboard() {
   const controls = <form className="link-form" onSubmit={event => {
     event.preventDefault()
     setPhone(undefined)
+    setPhoneStream(undefined)
+    setPhoneVisuals(null)
     setPhoneReceivedAt(undefined)
     setEvents([])
     setLink(token ? '' : 'Connecting…')

@@ -134,9 +134,8 @@ final class HazardModels {
     return loaded
   }
 
-  func preview(_ frame: ARFrame, timeMs: Double, session: Int, progress: (String) -> Void,
+  func preview(_ frame: ARFrame, timeMs: Double, started: TimeInterval, session: Int, progress: (String) -> Void,
                partial: ([String: Any]) -> Void) -> [String: Any] {
-    let started = ProcessInfo.processInfo.systemUptime
     let depth = frame.sceneDepth.flatMap(DepthSamples.init)
     var status = ["glass": "Waiting", "stairs": "Waiting", "person": "Waiting"]
     var masks: [[String: Any]] = []
@@ -262,17 +261,25 @@ final class HazardModels {
       : SIMD2<Float>(repeating: 1)
     let center = SIMD2<Float>(repeating: 0.5)
     var labels = Data()
+    labels.reserveCapacity(previewSize * previewSize)
     var points: [[Float]] = []
     var probabilities: [Float] = [0, 0]
     var guidance: [ModelHazardSample] = []
     let k = camera.intrinsics
+    let strides = output.strides.map(\.intValue)
+    let floats = output.dataType == .float32 ? output.dataPointer.assumingMemoryBound(to: Float.self) : nil
+    func logit(_ channel: Int, _ row: Int, _ col: Int) -> Float {
+      if let floats { return floats[channel * strides[1] + row * strides[2] + col * strides[3]] }
+      return output[[0, NSNumber(value: channel), NSNumber(value: row), NSNumber(value: col)]].floatValue
+    }
     for y in 0..<previewSize {
+      let v = (Float(y) + 0.5) / Float(previewSize)
+      let row = Int(((v - center.y) * fit.y + center.y) * Float(size))
       for x in 0..<previewSize {
-        let uv = SIMD2((Float(x) + 0.5) / Float(previewSize), (Float(y) + 0.5) / Float(previewSize))
-        let modelUV = (uv - center) * fit + center
-        let row = NSNumber(value: Int(modelUV.y * Float(size)))
-        let col = NSNumber(value: Int(modelUV.x * Float(size)))
-        let first = output[[0, 0, row, col]].floatValue
+        let u = (Float(x) + 0.5) / Float(previewSize)
+        let uv = SIMD2(u, v)
+        let col = Int(((u - center.x) * fit.x + center.x) * Float(size))
+        let first = logit(0, row, col)
         var label: UInt8 = 0
         var confidence: Float = 0
         if kind == "glass" {
@@ -283,8 +290,8 @@ final class HazardModels {
             probabilities[0] = max(probabilities[0], confidence)
           }
         } else {
-          let riser = output[[0, 1, row, col]].floatValue
-          let tread = output[[0, 2, row, col]].floatValue
+          let riser = logit(1, row, col)
+          let tread = logit(2, row, col)
           if riser > first || tread > first { label = tread > riser ? 2 : 1 }
           if first.isFinite, riser.isFinite, tread.isFinite {
             let peak = max(first, max(riser, tread))

@@ -1,8 +1,10 @@
-import { useEffect, useMemo, useRef } from 'react'
+import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import type { ModelPreview as Preview } from '../shared/contracts'
 import { PointCloud } from './PointCloud'
 import { glassBearing } from './modelColors'
+import { estimateGlassRange } from './glassRange'
 import { distancePalette } from './DepthImages'
+import { orientImagePoint, scanDisplayRotation } from './denseScan'
 
 const glass = [84, 203, 237]
 const riser = [248, 166, 96]
@@ -32,16 +34,21 @@ function SceneImage({ depth, muted }: { depth: NonNullable<Preview['depthPreview
   return <canvas ref={canvas} width={width} height={height} role="img" aria-label="Depth image from the model frame" />
 }
 
-function PersonBoxes({ people, width, height }: { people: Preview['people']; width: number; height: number }) {
+function PersonBoxes({ people, width, height, rotation = 0 }: {
+  people: Preview['people']; width: number; height: number; rotation?: ReturnType<typeof scanDisplayRotation>
+}) {
   return <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" role="img" aria-label="Person boxes in camera image coordinates">
-    {people.map(({ box: [x, y, w, h], confidence }, index) => {
+    {people.map(({ box: [u, v, w, h], confidence }, index) => {
+      const [x1, y1] = orientImagePoint(u, v, rotation)
+      const [x2, y2] = orientImagePoint(u + w, v + h, rotation)
+      const x = Math.min(x1, x2), y = Math.min(y1, y2)
       const font = height * 0.045
       const label = `Person ${Math.round(confidence * 100)}%`
       const labelWidth = font * (label.length * 0.62 + 0.8)
       const labelX = Math.max(0, Math.min(x * width, width - labelWidth))
       const labelY = Math.max(0, y * height - font * 1.45)
       return <g key={index}>
-        <rect x={x * width} y={y * height} width={w * width} height={h * height} fill={personColor} fillOpacity=".06" stroke={personColor} strokeWidth="2" vectorEffect="non-scaling-stroke" />
+        <rect x={x * width} y={y * height} width={Math.abs(x2 - x1) * width} height={Math.abs(y2 - y1) * height} fill={personColor} fillOpacity=".06" stroke={personColor} strokeWidth="2" vectorEffect="non-scaling-stroke" />
         <rect x={labelX} y={labelY} width={labelWidth} height={font * 1.45} fill={personColor} />
         <text x={labelX + font * 0.4} y={labelY + font} fill="#0a1610" fontSize={font} fontWeight="700">{label}</text>
       </g>
@@ -95,7 +102,7 @@ function ModelKey({ kind }: { kind?: 'glass' | 'stairs' | 'person' }) {
   </div>
 }
 
-export function ModelPreview({ preview, view, mutedDepth, setMutedDepth }: {
+export const ModelPreview = memo(function ModelPreview({ preview, view, mutedDepth, setMutedDepth }: {
   preview?: Preview
   view: 'separate' | 'combined' | 'scan'
   mutedDepth: boolean
@@ -105,14 +112,41 @@ export function ModelPreview({ preview, view, mutedDepth, setMutedDepth }: {
       const [red, green, blue] = mask.kind === 'glass' ? glass : riser
       return mask.points.map(point => ({ point, rgb: (red << 16) | (green << 8) | blue }))
     }) ?? [], [preview])
+  const matchingScan = preview?.denseScan?.timeMs === preview?.timeMs ? preview?.denseScan : undefined
+  const masks = preview?.masks
+  const glassReading = useMemo(() => matchingScan && masks ? {
+    timeMs: matchingScan.timeMs,
+    session: matchingScan.tracking?.session,
+    bearing: glassBearing(matchingScan, masks),
+    range: estimateGlassRange(matchingScan, masks),
+  } : undefined, [matchingScan, masks])
+  const previousGlassReading = useRef<typeof glassReading>(undefined)
+  const [confirmedGlassTime, setConfirmedGlassTime] = useState<number>()
+  useEffect(() => {
+    if (preview?.partial && !glassReading?.bearing) return
+    const previous = previousGlassReading.current
+    if (glassReading && previous?.timeMs === glassReading.timeMs) return
+    previousGlassReading.current = glassReading
+    if (previous?.range === undefined || glassReading?.range === undefined ||
+        !previous.bearing || !glassReading.bearing || previous.session !== glassReading.session) return
+    const elapsed = glassReading.timeMs - previous.timeMs
+    if (elapsed > 0 && elapsed <= 8000 &&
+        Math.abs(glassReading.range - previous.range) <= 0.2 &&
+        Math.abs(glassReading.bearing.left - previous.bearing.left) <= 8 &&
+        Math.abs(glassReading.bearing.right - previous.bearing.right) <= 8) {
+      setConfirmedGlassTime(glassReading.timeMs)
+    }
+  }, [glassReading, preview?.partial])
   if (!preview) return <p className="waiting">On iPhone, enable Preview hazard models and Share 3D scan with dashboard.</p>
 
   const depth = preview.depthPreview
   const width = depth?.width ?? preview.denseScan?.width ?? 128
   const height = depth?.height ?? preview.denseScan?.height ?? 96
+  const rotation = scanDisplayRotation(preview.denseScan)
+  const portrait = Math.abs(rotation) === 90
   const alignedScan = !!preview.denseScan || !!preview.scan?.imageCoordinates
-  const matchingScan = preview.denseScan?.timeMs === preview.timeMs ? preview.denseScan : undefined
-  const bearing = matchingScan ? glassBearing(matchingScan, preview.masks) : undefined
+  const bearing = glassReading?.bearing
+  const glassRange = glassReading?.timeMs === confirmedGlassTime ? glassReading?.range : undefined
   const unlocated = preview.people.filter(person => !person.position || person.position[2] < 0.08).length
   return <>
     <div className="model-preview-toolbar">
@@ -120,20 +154,19 @@ export function ModelPreview({ preview, view, mutedDepth, setMutedDepth }: {
         <button aria-pressed={!mutedDepth} onClick={() => setMutedDepth(false)}>Color</button>
         <button aria-pressed={mutedDepth} onClick={() => setMutedDepth(true)}>Muted blue</button>
       </div>}
+      {bearing && <span>Glass bearing {bearing.left.toFixed(0)}° to {bearing.right.toFixed(0)}° · {glassRange === undefined ? 'Distance unknown' : `Estimated glass distance ~${glassRange.toFixed(1)} m`}</span>}
       <span className="model-latency">{Math.round(preview.latencyMs)} ms{preview.partial ? ' · Partial results' : ''}</span>
     </div>
-    {bearing && <div className="legend">
-      <span>Possible glass {bearing.left.toFixed(0)}° to {bearing.right.toFixed(0)}° relative to the phone. Distance unknown.</span>
-    </div>}
     {view === 'scan' ? (preview.scan || preview.denseScan) ? <>
       <PointCloud points={preview.scan?.points} pointColors={preview.scan?.pointColors} denseScan={preview.denseScan} overlayPoints={overlays}
         modelMasks={matchingScan ? preview.masks : undefined}
         people={preview.people} imageAspect={depth ? width / height : undefined} heading={null} phone
         cameraOverlay={alignedScan ? {
           coordinates: preview.scan?.imageCoordinates,
-          content: <><ScanMasks masks={preview.masks} /><svg width={96} height={96}>
-            <PersonBoxes people={preview.people} width={width} height={height} />
-          </svg></>,
+          content: <ScanMasks masks={preview.masks} />,
+          upright: <svg width={96} height={96}>
+            <PersonBoxes people={preview.people} width={portrait ? height : width} height={portrait ? width : height} rotation={rotation} />
+          </svg>,
         } : undefined}
         colorLabel={(preview.denseScan?.cameraColor || preview.scan?.pointColors) ? 'Camera color with model detections' : 'Height colors with model detections'} />
       <div className="legend">
@@ -181,4 +214,14 @@ export function ModelPreview({ preview, view, mutedDepth, setMutedDepth }: {
       </figure>
     </div>}
   </>
-}
+}, (previous, next) => {
+  if (previous.view !== next.view || previous.mutedDepth !== next.mutedDepth ||
+      previous.setMutedDepth !== next.setMutedDepth) return false
+  const before = previous.preview
+  const after = next.preview
+  if (before === after) return true
+  // The relay repeats snapshots while live guidance continues to update.
+  return !!before && !!after && before.timeMs === after.timeMs && before.latencyMs === after.latencyMs &&
+    before.partial === after.partial && !!before.denseScan === !!after.denseScan &&
+    !!before.scan === !!after.scan && !!before.depthPreview === !!after.depthPreview
+})

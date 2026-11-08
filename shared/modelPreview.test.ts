@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import type { ModelPreview } from './contracts.ts'
-import { validModelPreview, validPersonPreview } from '../dashboard/telemetry.ts'
+import { telemetryRelay, validModelPreview, validPersonPreview } from '../dashboard/telemetry.ts'
+import { createLoop } from './guidance.ts'
+import { createMock } from './mock.ts'
+import { EventEmitter } from 'node:events'
+import type { IncomingMessage, ServerResponse } from 'node:http'
+import type { ViteDevServer } from 'vite'
 import { decodeDenseScan } from '../dashboard/denseScan.ts'
 import { MODEL_COLORS, modelPointColors } from '../dashboard/modelColors.ts'
 import { spawnSync } from 'node:child_process'
@@ -15,6 +20,45 @@ function preview(size: number, kind: 'glass' | 'stairs' = 'glass'): ModelPreview
     masks: [{ kind, size, labels: Buffer.alloc(size * size, 1).toString('base64'), points: [] }], people: [],
   }
 }
+
+test('warning telemetry updates independently and a new stream clears cached visuals', () => {
+  let handle: ((request: IncomingMessage, response: ServerResponse) => void) | undefined
+  const plugin = telemetryRelay('test-token')
+  assert.equal(typeof plugin.configureServer, 'function')
+  if (typeof plugin.configureServer !== 'function') throw new Error('Missing telemetry middleware')
+  const server = { middlewares: { use: (_path: string, handler: typeof handle) => { handle = handler } } } as unknown as ViteDevServer
+  Reflect.apply(plugin.configureServer, undefined, [server])
+  assert.ok(handle)
+  const send = handle
+  function request(method: string, url: string, stream: string, body?: unknown) {
+    const req = Object.assign(new EventEmitter(), {
+      method, url, headers: { authorization: 'Bearer test-token', 'x-lantern-stream': stream }, setEncoding() {},
+    })
+    let status = 200
+    let payload: string | undefined
+    const res = {
+      setHeader() {},
+      writeHead(code: number) { status = code; return this },
+      end(data?: string) { payload = data },
+    }
+    send(req as unknown as IncomingMessage, res as unknown as ServerResponse)
+    if (body) { req.emit('data', JSON.stringify(body)); req.emit('end') }
+    return { status, data: payload ? JSON.parse(payload) : undefined }
+  }
+  const mock = createMock()
+  const loop = createLoop(mock.providers)
+  const frame = loop.tick()
+  assert.equal(request('POST', '/', 'first', frame).status, 204)
+  assert.equal(request('POST', '/visuals', 'first', { ...frame, modelPreview: preview(96) }).status, 204)
+  mock.setScenario('obstacle')
+  assert.equal(request('POST', '/', 'first', loop.tick()).status, 204)
+  assert.equal(request('GET', '/', 'first').data.frame.command.cue, 'obstacle')
+  assert.equal(request('GET', '/', 'first').data.frame.modelPreview, undefined)
+  assert.equal(request('GET', '/visuals', 'first').data.frame.modelPreview.timeMs, 100)
+  assert.equal(request('POST', '/', 'second', frame).status, 204)
+  assert.equal(request('GET', '/visuals', 'second').data, null)
+  assert.equal(request('POST', '/visuals', 'first', frame).status, 409)
+})
 
 test('relay accepts legacy and full-resolution masks including padded base64', () => {
   for (const size of [96, 224, 384]) assert.equal(validModelPreview(preview(size)), true)

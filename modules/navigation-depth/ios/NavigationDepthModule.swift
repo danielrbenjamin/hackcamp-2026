@@ -128,7 +128,7 @@ private final class DepthSensor: NSObject, ARSessionDelegate {
   private var scanSession = UUID().uuidString
   private var lastScanTime = -Double.infinity
   private let hazardModels = HazardModels()
-  private let hazardQueue = DispatchQueue(label: "navigation.hazard-preview", qos: .utility)
+  private let hazardQueue = DispatchQueue(label: "navigation.hazard-preview", qos: .userInitiated)
   private var hazardEnabled = false
   private var hazardGeneration = 0
   private var hazardPending = false
@@ -337,11 +337,12 @@ private final class DepthSensor: NSObject, ARSessionDelegate {
       let reportProgress = hazardEnabled && firstHazardPreview
       let shareScan = hazardEnabled && previewing
       let scanRun = scanGeneration
+      let started = ProcessInfo.processInfo.systemUptime
       if reportProgress { emit("onHazardPreviewStatus", ["message": "Preparing the first model preview"]) }
       hazardQueue.async { [weak self, hazardModels = self.hazardModels] in
         let scan = shareScan ? denseScan(frame, timeMs: timestamp) : nil
         let backdrop = shareScan ? frame.sceneDepth.flatMap(Self.encodeDepthPreview) : nil
-        var result = hazardModels.preview(frame, timeMs: timestamp, session: generation, progress: { message in
+        var result = hazardModels.preview(frame, timeMs: timestamp, started: started, session: generation, progress: { message in
           guard reportProgress else { return }
           DispatchQueue.main.async { [weak self] in
             guard let self, self.runID == run, self.hazardEnabled, self.hazardGeneration == generation else { return }
@@ -355,30 +356,37 @@ private final class DepthSensor: NSObject, ARSessionDelegate {
           DispatchQueue.main.async { [weak self] in
             guard let self, self.runID == run, self.hazardEnabled, self.hazardGeneration == generation else { return }
             self.updateModelHazards(result, frame: framePose, time: frameTime)
-            guard reportProgress else { return }
+            let models = result["models"] as? [String: String]
+            guard reportProgress || models?["glass"] == "Preview" else { return }
             var payload = preview
             if self.scanGeneration != scanRun { payload.removeValue(forKey: "denseScan"); payload.removeValue(forKey: "depthPreview") }
             self.emit?("onHazardPreview", payload)
           }
         })
-        let count = capture?.capture(frame, timeMs: timestamp, predictions: result, epoch: epoch)
+        let recordingResult = result
         result["depthPreview"] = backdrop
         result["denseScan"] = scan
         let preview = Self.publicPreview(result)
         let guidanceResult = result
         DispatchQueue.main.async {
           guard let self else { return }
-          self.hazardPending = false
-          if let capture, self.walk === capture, let count {
-            self.walkCount = count
-            self.emit?("onWalkFrame", ["count": count])
-          }
+          if capture == nil { self.hazardPending = false }
           guard self.runID == run, self.hazardEnabled, self.hazardGeneration == generation else { return }
           self.updateModelHazards(guidanceResult, frame: framePose, time: frameTime)
           self.firstHazardPreview = false
           var payload = preview
           if self.scanGeneration != scanRun { payload.removeValue(forKey: "denseScan"); payload.removeValue(forKey: "depthPreview") }
           self.emit?("onHazardPreview", payload)
+        }
+        if let capture {
+          let count = capture.capture(frame, timeMs: timestamp, predictions: recordingResult, epoch: epoch)
+          DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.hazardPending = false
+            guard self.walk === capture else { return }
+            self.walkCount = count
+            self.emit?("onWalkFrame", ["count": count])
+          }
         }
       }
     }

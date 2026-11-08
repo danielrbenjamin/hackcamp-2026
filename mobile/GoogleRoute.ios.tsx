@@ -49,7 +49,7 @@ function WalkingRoute({ onRoute, siriDestination, visible, voiceOnly, endRequest
   const [autoPlace, setAutoPlace] = useState<PlaceSuggestion | null>(null)
   const handledSiri = useRef<GoogleRouteProps['siriDestination']>(undefined)
   const handledEnd = useRef(endRequest)
-  const session = useRef({ initialized: false, active: false, alive: true, request: 0, location: null as Coordinate | null,
+  const session = useRef({ initialized: false, active: false, alive: true, request: 0, fetching: 0, location: null as Coordinate | null,
     locationAtMs: 0, path: [] as Coordinate[], destination: '', maneuver: '', rerouting: false })
 
   useEffect(() => {
@@ -157,7 +157,9 @@ function WalkingRoute({ onRoute, siriDestination, visible, voiceOnly, endRequest
 
   const refreshRoute = useCallback(async () => {
     const state = session.current
+    if (!state.active || (state.fetching !== 0 && state.fetching === state.request)) return
     const request = ++state.request
+    state.fetching = request
     try {
       const segment = await controller.getCurrentRouteSegment()
       if (!state.active || request !== state.request) return
@@ -165,6 +167,8 @@ function WalkingRoute({ onRoute, siriDestination, visible, voiceOnly, endRequest
     } catch {
       if (!state.active || request !== state.request) return
       state.path = []
+    } finally {
+      if (state.fetching === request) state.fetching = 0
     }
     state.rerouting = state.path.length < 2
     publishRoute()
@@ -180,7 +184,11 @@ function WalkingRoute({ onRoute, siriDestination, visible, voiceOnly, endRequest
       setLocationReady(true)
       publishRoute()
     })
-    setOnRouteChanged(() => { if (state.active) void refreshRoute() })
+    setOnRouteChanged(() => {
+      if (!state.active) return
+      ++state.request
+      void refreshRoute()
+    })
     setOnReroutingRequestedByOffRoute(() => {
       ++state.request
       state.path = []
@@ -210,7 +218,12 @@ function WalkingRoute({ onRoute, siriDestination, visible, voiceOnly, endRequest
       setStatus('Arrived at the destination.')
       void controller.stopGuidance().catch(() => {})
     })
+    const routeRetry = setInterval(() => {
+      if (state.active && (state.rerouting || state.path.length < 2 ||
+          (state.location && routeBearing(state.location, state.path) === null))) void refreshRoute()
+    }, 1500)
     return () => {
+      clearInterval(routeRetry)
       state.active = false
       state.alive = false
       ++state.request

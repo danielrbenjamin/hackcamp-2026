@@ -14,7 +14,10 @@ export function validHazards(value: unknown): value is readonly Hazard[] {
 }
 
 export function blocksCorridor(hazard: Hazard, heading: Heading): boolean {
-  if ('bearing' in hazard) return heading + 20 >= hazard.bearing[0] && heading - 20 <= hazard.bearing[1]
+  if ('bearing' in hazard) {
+    const margin = hazard.kind === 'glass' ? 5 : 20
+    return heading + margin >= hazard.bearing[0] && heading - margin <= hazard.bearing[1]
+  }
 
   const angle = heading * Math.PI / 180
   const sin = Math.sin(angle)

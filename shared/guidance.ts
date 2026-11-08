@@ -25,9 +25,9 @@ function freshObservation(observation: Observation, now: number): boolean {
 
 export function reflex(observation: Observation, now: number): Telemetry['reflex'] {
   if (!freshObservation(observation, now)) return 'unknown'
-  const forward = observation.zones.slice(1, 4)
-  if (forward.some(value => validClearance(value) && value < 0.85)) return 'obstacle'
-  return forward.every(validClearance) ? 'clear' : 'unknown'
+  const [, left, ahead, right] = observation.zones
+  if (validClearance(ahead) && ahead < 0.85) return 'obstacle'
+  return [left, ahead, right].every(validClearance) ? 'clear' : 'unknown'
 }
 
 export function selectHeading(observation: Observation, route: Route, previous: Heading | null,
@@ -84,7 +84,7 @@ export function createLoop(providers: Providers, allowNativeGuidance = false) {
         (observation.source === 'simulated' || (allowNativeGuidance && route.source === 'google'))
       const detections = observation.hazards
       const modelWarning = hazard !== 'obstacle' && freshObservation(observation, time) && validHazards(detections)
-        ? detections.find(detection => blocksCorridor(detection, 0))?.kind : undefined
+        ? detections.find(detection => 'position' in detection && blocksCorridor(detection, 0))?.kind : undefined
       const blockedHeadings = hazard !== 'clear' || detections === undefined ? []
         : validHazards(detections) ? HEADINGS.filter(heading => detections.some(detection => blocksCorridor(detection, heading)))
         : HEADINGS

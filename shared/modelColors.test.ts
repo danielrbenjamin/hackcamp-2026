@@ -3,6 +3,7 @@ import { test } from 'node:test'
 import type { DenseScan, ModelPreview } from './contracts.ts'
 import { decodeDenseScan } from '../dashboard/denseScan.ts'
 import { MODEL_COLORS, modelPointColors, glassBearing } from '../dashboard/modelColors.ts'
+import { estimateGlassRange } from '../dashboard/glassRange.ts'
 
 function fixture() {
   const samples = Buffer.alloc(4 * 2 * 8)
@@ -76,4 +77,37 @@ test('glass bearing uses the pose basis when the image is rolled', () => {
   masks[0] = { ...masks[0], kind: 'glass', labels: Buffer.from([0, 1, 0, 0]).toString('base64') }
   scan.basis = [0, 1, 0, -1, 0, 0, 0, 0, 1]
   assert.ok(glassBearing(scan, masks)!.right < 0)
+})
+
+test('glass range uses opposing frame returns and rejects a continuous backdrop or a missing edge', () => {
+  const size = 24
+  const { scan } = fixture()
+  Object.assign(scan, { width: size, height: size, intrinsics: [24, 24, 12, 12] })
+  const samples = Buffer.alloc(size * size * 8)
+  const labels = Buffer.alloc(size * size)
+  for (let row = 0; row < size; row++) {
+    for (let col = 0; col < size; col++) {
+      const index = row * size + col
+      const pane = col >= 6 && col < 18
+      labels[index] = Number(pane)
+      samples.writeFloatLE(pane ? 4 : 2, index * 8)
+      samples[index * 8 + 7] = 2
+    }
+  }
+  const masks: ModelPreview['masks'] = [{ kind: 'glass', size, labels: labels.toString('base64'), points: [] }]
+  scan.samples = samples.toString('base64')
+  assert.ok(Math.abs(estimateGlassRange(scan, masks)! - 2) < 0.01)
+
+  for (let index = 0; index < labels.length; index++) {
+    if (index % size >= 18) samples[index * 8 + 7] = 0
+  }
+  scan.samples = samples.toString('base64')
+  assert.equal(estimateGlassRange(scan, masks), undefined)
+
+  for (let index = 0; index < labels.length; index++) {
+    samples.writeFloatLE(4, index * 8)
+    samples[index * 8 + 7] = 2
+  }
+  scan.samples = samples.toString('base64')
+  assert.equal(estimateGlassRange(scan, masks), undefined)
 })

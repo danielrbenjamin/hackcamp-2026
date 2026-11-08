@@ -1,11 +1,13 @@
 import { useEffect, useId, useMemo, useRef, useState, type PointerEvent, type ReactNode } from 'react'
 import { HAZARD_LABELS, type DenseScan, type DepthPoint, type Grid, type Hazard, type Heading, type ModelPreview } from '../shared/contracts'
 import { CloudCanvas } from './CloudCanvas'
-import { decodeDenseScan, fillScanGaps, scanImagePoint, SCAN_HISTORY_MS, type ScanFrame } from './denseScan'
+import { distancePalette } from './DepthImages'
+import { decodeDenseScan, fillScanGaps, orientImagePoint, scanDisplayRotation, scanImagePoint, SCAN_HISTORY_MS, type ScanFrame } from './denseScan'
 import { modelPointColors } from './modelColors'
 
 const colors = ['#49608b', '#59a8b2', '#a1b979', '#e9ae6b']
 const heightRgb = colors.map(color => parseInt(color.slice(1), 16))
+const depthRgb = distancePalette(500).map(([r, g, b]) => (Math.round(r) << 16) | (Math.round(g) << 8) | Math.round(b))
 const orbitHome = { yaw: -27, tilt: 36, zoom: 1, x: 0, y: 0 }
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value))
 
@@ -56,7 +58,7 @@ export function PointCloud({ points, pointColors, heading, hazards, phone, color
   overlayPoints?: readonly { point: DepthPoint; rgb: number }[]
   people?: ModelPreview['people']
   imageAspect?: number
-  cameraOverlay?: { coordinates?: string; content: ReactNode }
+  cameraOverlay?: { coordinates?: string; content: ReactNode; upright?: ReactNode }
   denseScan?: DenseScan
   fillRecent?: boolean
   modelMasks?: ModelPreview['masks']
@@ -65,6 +67,7 @@ export function PointCloud({ points, pointColors, heading, hazards, phone, color
   const trailClip = useId()
   const [angled, setAngled] = useState(false)
   const [zoom, setZoom] = useState(1)
+  const [depthColor, setDepthColor] = useState(false)
   const [panMode, setPanMode] = useState(false)
   const [dragging, setDragging] = useState(false)
   const drag = useRef<{ id: number; x: number; y: number; pan: boolean } | null>(null)
@@ -157,6 +160,7 @@ export function PointCloud({ points, pointColors, heading, hazards, phone, color
   const visiblePoints = dense?.points ?? points
   const showCameraOverlay = !orbit && (!!dense || !!imageCoordinates)
   const hasCameraColor = dense ? !!dense.colors.length : !!rgb?.length
+  const showDepthColor = depthColor && !!dense
   const scale = 58 * camera.zoom * (phone ? 1.6 : 1)
   const centerDepth = phone ? 1.75 : 2.5
   const bounds = useMemo(() => frontBounds(dense ? undefined : points), [dense, points])
@@ -166,11 +170,17 @@ export function PointCloud({ points, pointColors, heading, hazards, phone, color
   const frontY = (bounds.bottom + bounds.top) / 2
   const centerX = frameWidth / 2
   const viewBox = `0 0 ${frameWidth} 420`
-  const aspect = denseScan ? denseScan.width / denseScan.height : imageAspect
+  const rotation = scanDisplayRotation(denseScan)
+  const sensorAspect = denseScan ? denseScan.width / denseScan.height : imageAspect
+  const aspect = Math.abs(rotation) === 90 ? 1 / sensorAspect : sensorAspect
   const imageWidth = Math.min(frameWidth, 420 * aspect) * zoom
   const imageHeight = imageWidth / aspect
   const imageX = (frameWidth - imageWidth) / 2
   const imageY = (420 - imageHeight) / 2
+  function projectImage(u: number, v: number): [number, number] {
+    const [x, y] = orientImagePoint(u, v, rotation)
+    return [imageX + x * imageWidth, imageY + y * imageHeight]
+  }
   const angle = camera.yaw * Math.PI / 180
   const pitch = camera.tilt * Math.PI / 180
   const sin = Math.sin(angle)
@@ -201,8 +211,10 @@ export function PointCloud({ points, pointColors, heading, hazards, phone, color
     let [x, y, depth] = projectPoint(point)
     if (showCameraOverlay && index !== undefined && dense && denseScan) {
       const pixel = dense.indices[index]
-      x = imageX + (pixel % denseScan.width + 0.5) / denseScan.width * imageWidth
-      y = imageY + (Math.floor(pixel / denseScan.width) + 0.5) / denseScan.height * imageHeight
+      const position = projectImage((pixel % denseScan.width + 0.5) / denseScan.width,
+        (Math.floor(pixel / denseScan.width) + 0.5) / denseScan.height)
+      x = position[0]
+      y = position[1]
       depth = dense.depths[index]
     } else if (showCameraOverlay && index !== undefined) {
       const offset = index * 4
@@ -224,7 +236,12 @@ export function PointCloud({ points, pointColors, heading, hazards, phone, color
       layers.set(stroke, (layers.get(stroke) ?? '') + `M${x.toFixed(1)},${y.toFixed(1)}h2.1`)
     }
   }
-  visiblePoints?.forEach((point, index) => addPoint(point, semanticColors?.[index] ?? (dense ? dense.colors[index] : rgb?.[index]), false, index))
+  visiblePoints?.forEach((point, index) => {
+    const baseColor = dense
+      ? showDepthColor ? depthRgb[clamp(Math.round(dense.depths[index] * 100), 1, 500)] : dense.colors[index]
+      : rgb?.[index]
+    addPoint(point, semanticColors?.[index] ?? baseColor, false, index)
+  })
   if (!showCameraOverlay && !semanticColors) overlayPoints?.forEach(({ point, rgb }) => addPoint(point, rgb, true))
   const direction = (heading ?? 0) * Math.PI / 180
   const origin = project([0, -1.2, 0])
@@ -252,7 +269,7 @@ export function PointCloud({ points, pointColors, heading, hazards, phone, color
       </svg>}
       <CloudCanvas vertices={vertexData.subarray(0, offset)} frameWidth={frameWidth} onFallback={setFallback} />
       <svg viewBox={viewBox} className="cloud" role="img"
-        aria-label={colorLabel ?? (hasCameraColor ? '3D LiDAR points with camera colors' : '3D LiDAR points colored by relative height')}>
+        aria-label={showDepthColor ? '3D LiDAR points colored by depth' : colorLabel ?? (hasCameraColor ? '3D LiDAR points with camera colors' : '3D LiDAR points colored by relative height')}>
         {[...layers].map(([color, path]) => <path key={color} d={path} fill="none" stroke={color} strokeWidth="2.1" />)}
         {orbit && axes.map(({ label, end, color }) => <g key={label}>
           <path d={`M${origin}L${end}`} stroke={color} />
@@ -273,7 +290,10 @@ export function PointCloud({ points, pointColors, heading, hazards, phone, color
           </g>
         })}
         {showCameraOverlay && cameraOverlay && <svg x={imageX} y={imageY} width={imageWidth} height={imageHeight}
-          viewBox="0 0 96 96" preserveAspectRatio="none">{cameraOverlay?.content}</svg>}
+          viewBox="0 0 96 96" preserveAspectRatio="none">
+          <g transform={`rotate(${rotation} 48 48)`}>{cameraOverlay.content}</g>
+          {cameraOverlay.upright}
+        </svg>}
         {showCameraOverlay && denseScan && people?.length ? <defs><clipPath id={trailClip}>
           <rect x={imageX} y={imageY} width={imageWidth} height={imageHeight} />
         </clipPath></defs> : null}
@@ -291,7 +311,7 @@ export function PointCloud({ points, pointColors, heading, hazards, phone, color
           const projectTrail = (point: DepthPoint) => {
             if (showCameraOverlay && denseScan) {
               const uv = scanImagePoint(denseScan, point)
-              return uv ? [imageX + uv[0] * imageWidth, imageY + uv[1] * imageHeight] : undefined
+              return uv ? projectImage(...uv) : undefined
             }
             return orbit || point[2] >= 0.08 ? project(point) : undefined
           }
@@ -319,13 +339,18 @@ export function PointCloud({ points, pointColors, heading, hazards, phone, color
       {!visiblePoints?.length && !hazards?.length && <p className="scan-empty">{!phone || visiblePoints ? 'No depth returns' : 'Enable 3D scan sharing on the iPhone'}</p>}
     </div>
     <div className="legend">
-      {colorLabel ? <span>{colorLabel}</span> : hasCameraColor ? <span>Camera color</span>
+      {showDepthColor ? <span className="depth-key">Near <i className="depth-scale" />5 m</span>
+        : colorLabel ? <span>{colorLabel}</span> : hasCameraColor ? <span>Camera color</span>
         : <span><i className="height-scale" />Height relative to phone</span>}
       <div className="scan-modes">
         <button aria-pressed={!angled} onClick={() => setAngled(false)}>Front</button>
         <button aria-pressed={angled} onClick={() => setAngled(true)}>Orbit</button>
         {fillRecent && denseScan?.tracking && <button aria-pressed={gapFill} onClick={() => setGapFill(value => !value)}>Fill gaps</button>}
       </div>
+      {dense && <div className="scan-modes" role="group" aria-label="Point colors">
+        <button aria-pressed={!showDepthColor} onClick={() => setDepthColor(false)}>{hasCameraColor ? 'RGB' : 'Height'}</button>
+        <button aria-pressed={showDepthColor} onClick={() => setDepthColor(true)}>Depth</button>
+      </div>}
       <label className="orbit">Zoom <input type="range" min={orbit ? 0.25 : 0.6} max={orbit ? 6 : 2.5} step="0.05" value={orbit ? camera.zoom : zoom}
         onChange={event => {
           const zoom = Number(event.target.value)

@@ -259,36 +259,74 @@ export default function App() {
   useEffect(() => {
     if (!streaming || !telemetryUrl || !telemetryToken) return
     const endpoint = `${telemetryUrl.replace(/\/$/, '')}/api/telemetry`
+    const stream = `${Date.now()}-${Math.random().toString(36).slice(2)}`
+    const headers = { Authorization: `Bearer ${telemetryToken}`, 'Content-Type': 'application/json', 'X-Lantern-Stream': stream }
     let request: AbortController | undefined
+    let visualRequest: AbortController | undefined
     let active = true
     let sentAt = 0
+    let visualKey = ''
+    let sentPreviewKey = ''
     const interval = setInterval(() => {
       const value = latestFrame.current
       if (request || !value || value.observation.timeMs <= sentAt || AppState.currentState === 'background') return
       sentAt = value.observation.timeMs
-      const scan = latestDenseScan.current
-      const freshScan = scan && Math.abs(value.observation.timeMs - scan.denseScan.timeMs) < 900 ? scan : undefined
       request = new AbortController()
       const timeout = setTimeout(() => request?.abort(), 1_500)
       void fetch(endpoint, { method: 'POST', signal: request.signal,
-        headers: { Authorization: `Bearer ${telemetryToken}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify(telemetrySummary({
-          ...value, modelPreview: native && previewModels ? latestModelPreview.current : undefined,
-          observation: {
-            ...value.observation,
-            depthPreview: freshScan?.depthPreview ?? value.observation.depthPreview,
-            smoothedDepthPreview: freshScan?.smoothedDepthPreview ?? value.observation.smoothedDepthPreview,
-            denseScan: freshScan?.denseScan,
-          },
-        }, native && sharePoints)),
+        headers,
+        body: JSON.stringify(telemetrySummary(value)),
       }).then(response => {
         if (active) setStreamStatus(response.ok ? 'Streaming to dashboard' : `Dashboard returned ${response.status}`)
       }, () => { if (active) setStreamStatus('Dashboard unreachable') }).finally(() => {
         clearTimeout(timeout)
         request = undefined
       })
-    }, 330)
-    return () => { active = false; clearInterval(interval); request?.abort() }
+    }, 100)
+    const visualInterval = setInterval(() => {
+      const value = latestFrame.current
+      if (!native || !sharePoints || visualRequest || !value || AppState.currentState === 'background') return
+      const scan = latestDenseScan.current
+      const freshScan = scan && Math.abs(value.observation.timeMs - scan.denseScan.timeMs) < 900 ? scan : undefined
+      const preview = previewModels ? latestModelPreview.current : undefined
+      const previewKey = preview ? `${preview.timeMs}/${preview.latencyMs}/${preview.partial}` : ''
+      const reusePreview = previewKey !== '' && previewKey === sentPreviewKey
+      const legacyScan = value.observation.points || value.observation.depthPreview ? value.observation.timeMs : ''
+      const key = `${freshScan?.denseScan.timeMs ?? legacyScan}/${previewKey}/${JSON.stringify(value.observation.hazards ?? null)}`
+      if (key === visualKey) return
+      visualRequest = new AbortController()
+      const timeout = setTimeout(() => visualRequest?.abort(), 3_000)
+      void fetch(`${endpoint}/visuals`, { method: 'POST', signal: visualRequest.signal,
+        headers: reusePreview ? { ...headers, 'X-Lantern-Reuse-Preview': '1' } : headers,
+        body: JSON.stringify(telemetrySummary({
+          ...value, modelPreview: reusePreview ? undefined : preview,
+          observation: {
+            ...value.observation,
+            depthPreview: freshScan?.depthPreview ?? value.observation.depthPreview,
+            smoothedDepthPreview: freshScan?.smoothedDepthPreview ?? value.observation.smoothedDepthPreview,
+            denseScan: freshScan?.denseScan,
+          },
+        }, true)),
+      }).then(response => {
+        if (response.ok) {
+          visualKey = key
+          sentPreviewKey = previewKey
+        } else if (response.status === 409) {
+          sentPreviewKey = ''
+          visualKey = ''
+        }
+      }, () => {}).finally(() => {
+        clearTimeout(timeout)
+        visualRequest = undefined
+      })
+    }, 150)
+    return () => {
+      active = false
+      clearInterval(interval)
+      clearInterval(visualInterval)
+      request?.abort()
+      visualRequest?.abort()
+    }
   }, [streaming, native, sharePoints, previewModels])
 
   function stopRecording() {
@@ -377,11 +415,11 @@ export default function App() {
     !frame ? 'Waiting for sensor data'
       : native && !fieldGuidance ? 'Direction cues are off'
       : frame.route.status === 'idle' ? 'Start a walk'
-      : frame.route.status === 'rerouting' ? 'Waiting for Google to update the route'
-      : native && !hasFreshRouteLocation(frame.route) ? 'Waiting for a fresh Google location. Try outdoors.'
-      : native && frame.route.trueBearing === undefined ? 'Google has no route direction at this location'
-      : native && frame.observation.forwardTrueHeading === undefined ? 'Phone heading unavailable. Hold the rear camera facing forward.'
-      : 'No clear direction toward the route'
+      : frame.route.status === 'rerouting' ? 'Waiting for Google’s route'
+      : native && !hasFreshRouteLocation(frame.route) ? 'Waiting for GPS. Try outdoors.'
+      : native && frame.route.trueBearing === undefined ? 'Route direction unavailable'
+      : native && frame.observation.forwardTrueHeading === undefined ? 'Hold the rear camera forward'
+      : 'No clear path toward the route'
   )
 
   useEffect(() => {
@@ -405,9 +443,10 @@ export default function App() {
   const homeColor = stopWarning ? palette.red : beltConnected && depthReady ? palette.blue : palette.yellow
   const homeInk = homeColor === palette.yellow ? '#000' : '#fff'
   const homeStatus = stopWarning ? warning : direction ?? (
-    !beltConnected ? native && beltEnabled ? beltStatus : 'Belt not connected'
+    hasRoute && frame?.route.status !== 'idle' ? guidanceStatus
+    : !beltConnected ? native && beltEnabled ? beltStatus : 'Belt not connected'
     : !depthReady ? !frame || status === 'starting' ? 'Starting detection' : 'Depth unavailable'
-    : hasRoute ? 'Waiting for direction' : 'Detection active')
+    : 'Detection active')
 
   function toggleBelt() {
     if (native) setBeltEnabled(value => !value)
@@ -481,8 +520,9 @@ export default function App() {
           {screen === 'home' && showSiriPrompt && !hasRoute &&
             <Text adjustsFontSizeToFit numberOfLines={5}
               style={[styles.siriPrompt, { color: homeInk }]}>{native ? siriPrompt : simulatedRoutePrompt}</Text>}
-          {screen === 'home' && voiceStatus &&
-            <Text adjustsFontSizeToFit numberOfLines={3} style={[styles.siriPrompt, { color: homeInk }]}>{voiceStatus}</Text>}
+          {screen === 'home' && voiceStatus
+            ? <Text adjustsFontSizeToFit numberOfLines={3} style={[styles.siriPrompt, { color: homeInk }]}>{voiceStatus}</Text>
+            : null}
           {screen === 'home' && <View style={styles.homeSettings}>
             <Pressable accessibilityRole="button" accessibilityLabel="Settings"
               accessibilityActions={[{ name: 'activate' }]}

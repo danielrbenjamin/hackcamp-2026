@@ -1,4 +1,4 @@
-import { useRef, useState, type DragEvent, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type DragEvent, type ReactNode } from 'react'
 
 const views = {
   cloud: '3D scan', grid: 'Occupancy grid', depth: 'Depth & confidence',
@@ -21,9 +21,19 @@ export function EditorWorkspace({ layout, setLayout, renderView }: {
   const [target, setTarget] = useState<Edge | number>()
   const [ratio, setRatio] = useState(50)
   const [openedExtras, setOpenedExtras] = useState<EditorView[]>([])
+  const [expandedPane, setExpandedPane] = useState<number>()
   const workspace = useRef<HTMLDivElement>(null)
   const { groups, axis } = layout
   const split = groups.length === 2
+
+  useEffect(() => {
+    if (expandedPane === undefined) return
+    function escape(event: KeyboardEvent) {
+      if (event.key === 'Escape') setExpandedPane(undefined)
+    }
+    window.addEventListener('keydown', escape)
+    return () => window.removeEventListener('keydown', escape)
+  }, [expandedPane])
 
   function finishDrag() {
     setDragged(undefined)
@@ -95,10 +105,12 @@ export function EditorWorkspace({ layout, setLayout, renderView }: {
     style={split ? axis === 'horizontal'
       ? { gridTemplateColumns: `minmax(0, ${ratio}fr) 7px minmax(0, ${100 - ratio}fr)` }
       : { gridTemplateRows: `minmax(0, ${ratio}fr) 7px minmax(0, ${100 - ratio}fr)` } : undefined}>
-    {groups.map((group, index) => <section key={index} className="editor-group" aria-label={`Editor pane ${index + 1}`}>
+    {groups.map((group, index) => <section key={index} className="editor-group" data-expanded={expandedPane === index}
+      aria-label={`Editor pane ${index + 1}`}>
       <div className="editor-strip" data-drop={split && target === index}
         onDragOver={split ? event => accept(event, index) : undefined}
         onDrop={split ? event => drop(event, index) : undefined}>
+        {expandedPane === index ? <h2 className="expanded-view-title">{views[group.active]}</h2> : <>
         <div className="editor-tabs" role="group" aria-label="Views">
           {group.tabs.filter(view => !extraViews.has(view) || openedExtras.includes(view) || group.active === view)
             .map(view => <div className="editor-tab" key={view}><button draggable data-dragging={dragged === view}
@@ -119,8 +131,15 @@ export function EditorWorkspace({ layout, setLayout, renderView }: {
           {group.tabs.filter(view => extraViews.has(view) && !openedExtras.includes(view) && group.active !== view)
             .map(view => <option key={view} value={view}>{views[view]}</option>)}
         </select>}
+        </>}
         <div className="editor-actions">
-          {split ? <button title="Merge editor panes" aria-label={`Merge editor pane ${index + 1}`}
+          {(expandedPane === index || group.active === 'cloud' || group.active === 'scan' || group.active === 'depth') &&
+            <button title={expandedPane === index ? 'Exit full screen (Esc)' : 'Full screen'}
+              aria-label={expandedPane === index ? 'Exit full screen' : 'Full screen'}
+              onClick={() => setExpandedPane(expandedPane === index ? undefined : index)}>
+              {expandedPane === index ? '×' : '⛶'}
+            </button>}
+          {expandedPane === index ? null : split ? <button title="Merge editor panes" aria-label={`Merge editor pane ${index + 1}`}
             onClick={() => setLayout({ ...layout, groups: [{ tabs: groups.flatMap(pane => pane.tabs), active: groups[1 - index].active }] })}>×</button>
             : <>
               <button title="Split right" aria-label="Split right" onClick={() => splitView(group.active, 'right')}>◫</button>

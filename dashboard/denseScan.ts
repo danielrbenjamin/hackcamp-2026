@@ -1,5 +1,23 @@
 import type { DenseScan, DepthPoint } from '../shared/contracts'
 
+export function scanDisplayRotation(scan: DenseScan | undefined): 0 | 90 | -90 | 180 {
+  if (!scan) return 0
+  const upAlongX = scan.basis[1]
+  const upAlongY = scan.basis[4]
+  if (Math.hypot(upAlongX, upAlongY) < 0.1) return 0
+  if (Math.abs(upAlongX) > Math.abs(upAlongY)) return upAlongX < 0 ? 90 : -90
+  return upAlongY < 0 ? 180 : 0
+}
+
+export function orientImagePoint(u: number, v: number, rotation: ReturnType<typeof scanDisplayRotation>): [number, number] {
+  switch (rotation) {
+    case 90: return [1 - v, u]
+    case -90: return [v, 1 - u]
+    case 180: return [1 - u, 1 - v]
+    default: return [u, v]
+  }
+}
+
 // Inverse of the camera-to-phone basis used to reconstruct scan returns.
 export function scanImagePoint(scan: DenseScan, point: DepthPoint): [number, number] | undefined {
   const [right, up, forward] = point

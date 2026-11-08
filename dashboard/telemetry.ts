@@ -76,11 +76,13 @@ export function validModelPreview(preview: unknown) {
 }
 
 export function telemetryRelay(token: string | undefined): Plugin {
-  let latest: { receivedAt: number; frame: unknown } | null = null
+  let latest: { receivedAt: number; frame: unknown; stream?: string } | null = null
+  let visuals: { receivedAt: number; frame: unknown; stream?: string } | null = null
   return {
     name: 'navigation-telemetry',
     configureServer(server) {
       server.middlewares.use('/api/telemetry', (request, response) => {
+        const visualLane = request.url === '/visuals'
         response.setHeader('Cache-Control', 'no-store')
         if (!token || request.headers.authorization !== `Bearer ${token}`) {
           response.writeHead(401).end()
@@ -88,7 +90,11 @@ export function telemetryRelay(token: string | undefined): Plugin {
         }
         if (request.method === 'GET') {
           response.setHeader('Content-Type', 'application/json')
-          response.end(JSON.stringify(latest))
+          const result = visualLane ? visuals : latest
+          const tag = result ? `"${result.receivedAt}"` : '"empty"'
+          response.setHeader('ETag', tag)
+          if (request.headers['if-none-match'] === tag) { response.writeHead(304).end(); return }
+          response.end(JSON.stringify(result))
           return
         }
         if (request.method !== 'POST') {
@@ -104,6 +110,11 @@ export function telemetryRelay(token: string | undefined): Plugin {
         request.on('end', () => {
           try {
             const frame = JSON.parse(body)
+            const stream = request.headers['x-lantern-stream']
+            if (stream !== undefined && (typeof stream !== 'string' || !/^[a-z0-9-]{1,64}$/i.test(stream))) {
+              response.writeHead(400).end()
+              return
+            }
             const observation = frame?.observation
             const grid = observation?.grid
             const points = observation?.points
@@ -125,7 +136,18 @@ export function telemetryRelay(token: string | undefined): Plugin {
               return
             }
             delete observation.scanPose
-            latest = { receivedAt: Date.now(), frame }
+            if (visualLane) {
+              if (!stream || latest?.stream !== stream) { response.writeHead(409).end(); return }
+              if (request.headers['x-lantern-reuse-preview'] === '1' && frame.modelPreview === undefined) {
+                const previous = visuals?.stream === stream ? (visuals?.frame as { modelPreview?: unknown })?.modelPreview : undefined
+                if (!previous) { response.writeHead(409).end(); return }
+                frame.modelPreview = previous
+              }
+              visuals = { receivedAt: Date.now(), frame, stream }
+            } else {
+              if (latest?.stream !== stream) visuals = null
+              latest = { receivedAt: Date.now(), frame, stream }
+            }
             response.writeHead(204).end()
           } catch {
             response.writeHead(400).end()
