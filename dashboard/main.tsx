@@ -123,6 +123,7 @@ function Dashboard() {
       smoothedDepthPreview: visualFrame.observation.smoothedDepthPreview, hazards: visualFrame.observation.hazards,
     },
   } : phone : simulation
+  const overlayPreview = finishedPreview ?? frame?.modelPreview
   const cueLabel = frame?.modelWarning ? HAZARD_LABELS[frame.modelWarning] : frame ? cueLabels[frame.command.cue] : undefined
   const eventText = frame ? `${cueLabel} · ${frame.belt.connected ? 'belt online' : 'belt offline'}` : null
   const eventTime = frame?.observation.timeMs
@@ -231,8 +232,7 @@ function Dashboard() {
         <section className="editor" aria-label="Scan workspace">
           <EditorWorkspace layout={layout} setLayout={setLayout} renderView={mapView =>
             mapView === 'combined' || mapView === 'separate' || mapView === 'scan'
-              ? <ModelPreview view={mapView} preview={mapView === 'separate' ? frame?.modelPreview : finishedPreview ?? frame?.modelPreview}
-                completed={mapView === 'separate' ? finishedPreview : undefined} mutedDepth={mutedDepth} setMutedDepth={setMutedDepth} />
+              ? <ModelPreview view={mapView} preview={overlayPreview} mutedDepth={mutedDepth} setMutedDepth={setMutedDepth} />
               : mapView === 'depth' ? <DepthImages observation={observation} />
               : !grid || !observation ? <p className="waiting">{link || 'Waiting for depth data'}</p>
               : mapView === 'cloud' ? <PointCloud points={observation.source === 'simulated' ? simulatedPoints(grid) : observation.points}

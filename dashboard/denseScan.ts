@@ -38,10 +38,13 @@ export function scanImagePoint(scan: DenseScan, point: DepthPoint): [number, num
   return [(fx * x / z + cx) / scan.width, (cy - fy * y / z) / scan.height]
 }
 
+export function denseScanData(scan: DenseScan): DataView {
+  return new DataView(Uint8Array.from(atob(scan.samples), value => value.charCodeAt(0)).buffer)
+}
+
 export function decodeDenseScan(scan: DenseScan) {
-  const decoded = atob(scan.samples)
-  const bytes = Uint8Array.from(decoded, value => value.charCodeAt(0))
-  const data = new DataView(bytes.buffer)
+  const data = denseScanData(scan)
+  const bytes = new Uint8Array(data.buffer)
   const points: DepthPoint[] = []
   const colors: number[] = []
   const indices: number[] = []

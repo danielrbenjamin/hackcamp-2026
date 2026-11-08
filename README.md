@@ -67,7 +67,7 @@ Flash `firmware/NavigationBelt/NavigationBelt.ino` to a classic ESP32 using Ardu
 - Glass supplies a bearing. It can block overlapping directions. The rapid warning still requires a separate obstacle cue.
 - Raw LiDAR warnings run independently of the models. **Preview hazard models** toggles display and sharing. Hazard inference continues with previews off.
 
-On the dashboard, **Individual models** shows glass and people as soon as their partial preview arrives. Stairs keeps its last completed mask and matching depth image. **Combined overlay** and **3D scan overlay** use the latest complete model frame once one is available. Solid trails show measured pedestrian positions and dashed trails show the forecast. The preview timers measure native processing before upload and rendering.
+On the dashboard, **Individual models**, **Combined overlay**, and **3D scan overlay** share the same model frame. They show partial results until the first complete frame arrives, then use the latest complete frame. Solid trails show measured pedestrian positions and dashed trails show the forecast. The preview timer measures native processing before upload and rendering.
 
 ## Recordings and Databricks
 
