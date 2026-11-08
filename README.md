@@ -19,7 +19,7 @@ Open the URLs printed by Vite and Expo. Try **Obstacle**, **Sensor dropout**, an
 1. Transfer the repository to a Mac with Xcode 27 and CocoaPods. Run `npm ci`. Connect a LiDAR-equipped iPhone running iOS 17 or later, trust the Mac, enable Developer Mode, and select your Apple signing team.
 2. Enable Navigation SDK for iOS, Maps SDK for iOS, and Places API (New) in a billing-enabled Google Cloud project. Allow those APIs on the key and restrict it to the app's iOS bundle ID. Copy `.env.example` to `.env.local` and set `GOOGLE_MAPS_IOS_API_KEY`. A build without a key can still use simulation and LiDAR.
 3. Run `npx expo prebuild --platform ios --clean` to generate the native project, then `npm run ios`. The clean generation replaces root `ios/`. If signing needs manual setup, open the generated Xcode workspace and choose your team before running. Rebuild after changing the key or native code. For JS-only changes, use `npm run mobile`.
-4. Try simulation first. Then tap **Use iPhone LiDAR**, allow camera access, and hold the rear camera forward about 1.2 m above the floor. With the tester stationary, bring an object within roughly 0.85 m. Check the warning and the five zone readings under **Testing and data tools**. Cover or interrupt the sensor and verify directional cues stop.
+4. Lantern starts in LiDAR mode on a development iPhone. Allow camera access and hold the rear camera forward about 1.2 m above the floor. With the tester stationary, bring an object within roughly 0.85 m. Check the warning and the five zone readings under **Settings → Advanced**. Cover or interrupt the sensor and verify directional cues stop. Use **Switch to simulation** in Advanced to try the mock scenarios.
 5. Validate mounting, compass alignment, and depth coverage. Direction cues are enabled by default and require a fresh route and observed clearance. They appear on screen even with the belt disconnected. Tap **Connect belt** to receive them on the hardware, or turn off **Direction cues** to keep obstacle warnings only.
 6. Tap **Enable Google Navigation**, grant location access, and accept the Google dialog. Type or dictate a place name or address, select a suggestion, then tap **Start walk**. Verify the destination, maneuver text, and rerouting on the route card. Google turn-by-turn audio and route-start announcements for manually entered routes are off by default. Use **Route options** to enable either, or choose **Enter coordinates or Place ID** for manual entry.
 
@@ -42,7 +42,7 @@ Trigger an obstacle while a directional cue is active, disconnect and reconnect,
 
 ## Phone telemetry and recordings
 
-On the phone, open **Testing and data tools** for dashboard sharing and session recording.
+On the phone, open **Settings → Advanced** for dashboard sharing and session recording.
 
 With **Share 3D scan with dashboard** on, **Depth & confidence** shows distance and confidence from the same ARKit frame. Switch between **Raw** and **Smoothed** when available, and point at either image to read a pixel's distance and confidence. **Color range** controls display contrast. The 3D preview draws every finite positive sample in the ARKit depth raster, including low-confidence samples, with camera colors where available. **Front** uses the original camera framing, and **Orbit** lets you adjust rotation and tilt. Belt guidance continues to use its own range and confidence checks. Full RGB camera frames stay on-device.
 
@@ -60,7 +60,7 @@ Google computes the walking route. Lantern tests nine local corridors from −60
 
 The three selected packages, `GlassSegmentation.mlpackage`, `StairSegmentation.mlpackage`, and `PersonDetection.mlpackage`, belong in `modules/navigation-depth/ios/Models/` and can be tracked by Git. If the iOS project already exists, run `pod install` from root `ios/` to update its model resources, then run `npm run ios` from the repo root.
 
-Hazard models start when you select **Use iPhone LiDAR**. **Preview hazard models** under **Testing and data tools** controls the diagnostic preview and its sharing. With dashboard and 3D scan sharing enabled, select **Model preview** to see the masks, person boxes, and 3D detections.
+Hazard models start in iPhone LiDAR mode. **Preview hazard models** under **Settings → Advanced** controls the diagnostic preview and its sharing. With dashboard and 3D scan sharing enabled, select **Model preview** to see the masks, person boxes, and 3D detections.
 
 Fresh model hazards can block a local direction and trigger the belt obstacle pattern when they overlap the forward corridor. Stairs require depth-supported mask points. People use measured positions and a short crossing forecast. Glass uses its image bearing with distance unknown. The phone discards old results and clears them when tracking resets. The independent raw LiDAR warning has priority and continues if models are unavailable. Check the model warning transitions and false alerts on a stationary iPhone before walking with the belt.
 

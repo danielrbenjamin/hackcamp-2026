@@ -14,6 +14,7 @@ const termsOptions = { title: 'Lantern', companyName: 'Lantern' }
 
 export default function GoogleRoute(props: GoogleRouteProps) {
   if (!nativeDepth?.hasGoogleNavigation()) {
+    if (!props.visible) return null
     return <Text style={{ color: '#aab9c9' }}>Build with GOOGLE_MAPS_IOS_API_KEY to enable Google walking routes.</Text>
   }
   return <NavigationProvider termsAndConditionsDialogOptions={termsOptions}>
@@ -21,7 +22,7 @@ export default function GoogleRoute(props: GoogleRouteProps) {
   </NavigationProvider>
 }
 
-function WalkingRoute({ onRoute, siriDestination }: GoogleRouteProps) {
+function WalkingRoute({ onRoute, siriDestination, visible, endRequest }: GoogleRouteProps) {
   const {
     navigationController: controller, setOnLocationChanged, setOnRouteChanged,
     setOnReroutingRequestedByOffRoute, setOnTurnByTurn, setOnArrival,
@@ -47,6 +48,7 @@ function WalkingRoute({ onRoute, siriDestination }: GoogleRouteProps) {
   const [spokenSearch, setSpokenSearch] = useState<GoogleRouteProps['siriDestination']>()
   const [autoPlace, setAutoPlace] = useState<PlaceSuggestion | null>(null)
   const handledSiri = useRef<GoogleRouteProps['siriDestination']>(undefined)
+  const handledEnd = useRef(endRequest)
   const session = useRef({ initialized: false, active: false, alive: true, request: 0, location: null as Coordinate | null,
     locationAtMs: 0, path: [] as Coordinate[], destination: '', maneuver: '', rerouting: false })
 
@@ -309,6 +311,15 @@ function WalkingRoute({ onRoute, siriDestination }: GoogleRouteProps) {
     catch { setStatus('The Google navigation session could not stop cleanly.') }
     finally { working.current = false; setBusy(false) }
   }
+
+  const endRoute = useEffectEvent(() => { void stop() })
+  useEffect(() => {
+    if (endRequest === handledEnd.current || busy) return
+    handledEnd.current = endRequest
+    if (session.current.active) endRoute()
+  }, [endRequest, busy])
+
+  if (!visible) return null
 
   return <View style={{ gap: 12 }}>
     {status ? <Text accessibilityLiveRegion="polite" style={styles.muted}>{status}</Text> : null}

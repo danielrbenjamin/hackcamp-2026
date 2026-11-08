@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ComponentRef } from 'react'
-import { AccessibilityInfo, AppState, Platform, ScrollView, StyleSheet, Text, TextInput, useWindowDimensions, View } from 'react-native'
+import { AccessibilityInfo, AppState, Platform, Pressable, ScrollView, StatusBar, StyleSheet, Text, TextInput, useWindowDimensions, View } from 'react-native'
 import { File } from 'expo-file-system'
 import { shareAsync } from 'expo-sharing'
 import { ZONE_NAMES, type BeltStatus, type DenseScan, type DepthPreview, type ModelPreview, type Route, type Telemetry } from '../shared/contracts'
@@ -19,6 +19,7 @@ const telemetryToken = process.env.EXPO_PUBLIC_TELEMETRY_TOKEN
 const disconnected: BeltStatus = { connected: false, battery: null, source: 'ble' }
 const beltDirections = ['Turn farther left', 'Veer left', 'Go straight', 'Veer right', 'Turn farther right']
 const scenarioChoices = Object.keys(scenarios) as Scenario[]
+const palette = { yellow: '#F8C200', blue: '#005299', red: '#E20004', cream: '#FFFDDE' }
 
 function hasFreshRouteLocation(route: Route): boolean {
   const age = Date.now() - (route.updatedAtMs ?? 0)
@@ -28,17 +29,25 @@ function hasFreshRouteLocation(route: Route): boolean {
 export default function App() {
   const { width, fontScale } = useWindowDimensions()
   const scenarioColumns = width >= 380 && fontScale <= 1.15 ? 2 : 1
-  const [mock] = useState(createMock)
+  const [mock] = useState(() => {
+    const provider = createMock()
+    provider.setDestination('')
+    provider.setConnected(false)
+    return provider
+  })
   const [frame, setFrame] = useState<Telemetry>()
   const [scenario, setScenario] = useState<Scenario>('walk')
-  const [native, setNative] = useState(false)
-  const [showTools, setShowTools] = useState(false)
-  const [status, setStatus] = useState<DepthStatus>('idle')
-  const [connected, setConnected] = useState(true)
+  const [native, setNative] = useState(Platform.OS === 'ios' && !!nativeDepth)
+  const [screen, setScreen] = useState<'home' | 'settings' | 'advanced' | 'route'>('home')
+  const scrollView = useRef<ComponentRef<typeof ScrollView>>(null)
+  const screenHeading = useRef<ComponentRef<typeof Text>>(null)
+  const previousScreen = useRef(screen)
+  const [status, setStatus] = useState<DepthStatus>(native ? 'starting' : 'idle')
+  const [connected, setConnected] = useState(false)
   const [destination, setDestination] = useState('Engineering Design Centre')
   const [siriDestination, setSiriDestination] = useState<{ query: string }>()
-  const scrollView = useRef<ComponentRef<typeof ScrollView>>(null)
-  const routeY = useRef<number | null>(null)
+  const [routeActive, setRouteActive] = useState(false)
+  const [endRequest, setEndRequest] = useState(0)
   const [beltEnabled, setBeltEnabled] = useState(false)
   const [beltState, setBeltState] = useState('disconnected')
   const [fieldGuidance, setFieldGuidance] = useState(true)
@@ -63,7 +72,22 @@ export default function App() {
   const recordingActive = useRef(false)
   const session = useRef<ReturnType<typeof createRecording>>(null)
   const lastRecorded = useRef(0)
-  const onRoute = useCallback((route: Route | null) => { google.current = route }, [])
+  const onRoute = useCallback((route: Route | null) => {
+    google.current = route
+    const active = !!route && route.status !== 'idle'
+    setRouteActive(active)
+    if (active) setScreen(current => current === 'route' ? 'home' : current)
+  }, [])
+
+  useEffect(() => {
+    if (previousScreen.current === screen) return
+    previousScreen.current = screen
+    scrollView.current?.scrollTo({ y: 0, animated: false })
+    const frame = requestAnimationFrame(() => {
+      if (screenHeading.current) AccessibilityInfo.sendAccessibilityEvent(screenHeading.current, 'focus')
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [screen])
 
   useEffect(() => {
     if (!nativeDepth?.takeSiriDestination) return
@@ -73,6 +97,7 @@ export default function App() {
         if (!active || !query) return
         setSiriDestination({ query })
         setNative(true)
+        if (!google.current) setScreen('route')
         setStatus(current => current === 'idle' ? 'starting' : current)
       }).catch(() => {})
     }
@@ -81,10 +106,6 @@ export default function App() {
     readDestination()
     return () => { active = false; listener.remove(); appState.remove() }
   }, [])
-
-  useEffect(() => {
-    if (siriDestination && routeY.current !== null) scrollView.current?.scrollTo({ y: routeY.current })
-  }, [siriDestination])
 
   useEffect(() => {
     if (!native || !beltEnabled || !nativeDepth) return
@@ -299,7 +320,7 @@ export default function App() {
     latestFrame.current = null
     setFrame(undefined)
     setNative(value)
-    if (!value) { setSiriDestination(undefined); routeY.current = null }
+    if (!value) setSiriDestination(undefined)
     setSharePoints(false)
     setStatus(value ? 'starting' : 'idle')
   }
@@ -338,14 +359,78 @@ export default function App() {
     }
   }, [native, beltEnabled, beltState, beltStatus])
 
+  const stopWarning = cue === 'obstacle' || hazardHold
+  const beltConnected = native ? beltState === 'connected' : connected
+  const motors = frame?.command.motors ?? [0, 0, 0, 0, 0]
+  // Match the firmware's five command channels to its three physical outputs.
+  const buzzerLevels = [Math.max(motors[0], motors[1]), motors[2], Math.max(motors[3], motors[4])]
+  const buzzerConnected = beltConnected && frame?.belt.connected
+  const hasRoute = native ? routeActive : frame?.route.status === 'guiding'
+  const depthReady = (!native || status === 'running') && frame && cue !== 'unavailable'
+  const homeColor = stopWarning ? palette.red : beltConnected && depthReady ? palette.blue : palette.yellow
+  const homeInk = homeColor === palette.yellow ? '#000' : '#fff'
+  const homeStatus = stopWarning ? warning : direction ?? (
+    !beltConnected ? native && beltEnabled ? beltStatus : 'Belt not connected'
+    : !depthReady ? !frame || status === 'starting' ? 'Starting detection' : 'Depth unavailable'
+    : hasRoute ? 'Waiting for direction' : 'Detection active')
+
+  function toggleBelt() {
+    if (native) setBeltEnabled(value => !value)
+    else {
+      mock.setConnected(!connected)
+      setConnected(!connected)
+    }
+  }
+
+  function routeAction() {
+    if (!hasRoute) setScreen('route')
+    else if (native) setEndRequest(value => value + 1)
+    else mock.setDestination('')
+  }
+
   return (
-    <ScrollView ref={scrollView} style={styles.page} contentContainerStyle={styles.content}
+    <ScrollView ref={scrollView} style={[styles.page, screen === 'home' && { backgroundColor: homeColor }]}
+      contentContainerStyle={[styles.content, screen === 'home' && styles.homeContent]}
       contentInsetAdjustmentBehavior="automatic" keyboardDismissMode="on-drag" keyboardShouldPersistTaps="handled">
+      <StatusBar barStyle={screen === 'home' && homeColor === palette.yellow ? 'dark-content' : 'light-content'} />
+      {screen === 'home' ? <>
+        <View style={styles.homeHeader}>
+          <Pressable accessibilityRole="button" onPress={() => setScreen('settings')} style={styles.settingsButton}>
+            <Text style={[styles.settingsText, { color: homeInk }]}>Settings</Text>
+          </Pressable>
+        </View>
+        <HomeButton label={native ? beltEnabled ? 'Disconnect Belt' : 'Connect Belt' : connected ? 'Disconnect Belt' : 'Connect Belt'}
+          onPress={toggleBelt} largeText={fontScale > 1.15} />
+        <View style={[styles.homeReadout, fontScale > 1.15 && styles.homeIntrinsic]}>
+          <Text ref={screenHeading} accessible accessibilityRole="header"
+            style={[styles.homeStatus, width < 360 && styles.homeStatusCompact, { color: homeInk }]}>{homeStatus}</Text>
+        </View>
+        <HomeButton label={hasRoute ? 'End Route' : 'Set Destination'} onPress={routeAction} largeText={fontScale > 1.15} />
+      </> : <View style={styles.settings}>
+        <Control label={screen === 'advanced' ? 'Back to Settings' : 'Back to Home'}
+          onPress={() => setScreen(screen === 'advanced' ? 'settings' : 'home')} />
+        <Text ref={screenHeading} accessible accessibilityRole="header" style={styles.kicker}>
+          {screen === 'settings' ? 'Settings' : screen === 'advanced' ? 'Advanced' : 'Set destination'}
+        </Text>
+      </View>}
+      {screen === 'settings' && <Control label="Advanced" onPress={() => setScreen('advanced')} />}
+      {native && <View key="google-route" style={screen === 'route' ? styles.panel : styles.hidden}>
+        <GoogleRoute onRoute={onRoute} visible={screen === 'route'} endRequest={endRequest}
+          siriDestination={status === 'idle' || status === 'starting' ? undefined : siriDestination} />
+      </View>}
+      {screen === 'route' && !native && <View style={styles.panel}>
+        <TextInput accessibilityLabel="Simulated destination" style={styles.input} value={destination}
+          onChangeText={setDestination} onSubmitEditing={() => {
+            if (destination.trim()) { mock.setDestination(destination); setScreen('home') }
+          }} returnKeyType="go" />
+        <Control label="Start simulated route" disabled={!destination.trim()}
+          onPress={() => { mock.setDestination(destination); setScreen('home') }} />
+      </View>}
+      {screen === 'advanced' && <>
       <View style={styles.banner}>
         <Text accessible accessibilityRole="header" accessibilityLabel="Lantern"
           allowFontScaling={false} style={styles.wordmark}>{LANTERN_BANNER}</Text>
       </View>
-      {nativeDepth && !native && <Control label="Use iPhone LiDAR" primary onPress={() => setSensorMode(true)} />}
       {native && <View style={styles.panel}>
         <Text accessibilityRole="header" style={styles.kicker}>Belt</Text>
         <Text style={styles.status}>{beltStatus}{frame?.belt.battery != null ? ` · ${frame.belt.battery}% battery` : ''}</Text>
@@ -360,56 +445,24 @@ export default function App() {
         <Text accessibilityRole="header" style={styles.readoutLabel}>{native ? 'Belt guidance' : 'Simulated belt guidance'}</Text>
         <Text style={[styles.heading, (cue === 'obstacle' || hazardHold) && styles.alert]}>{guidanceStatus}</Text>
       </View>
-      {!native && <View style={styles.panel}>
-        <Text accessibilityRole="header" style={styles.kicker}>Scenario</Text>
-        <View style={styles.scenarioList}>
-          {Array.from({ length: Math.ceil(scenarioChoices.length / scenarioColumns) }, (_, row) => (
-            <View key={row} style={styles.scenarioRow}>
-              {scenarioChoices.slice(row * scenarioColumns, (row + 1) * scenarioColumns).map(value => (
-                <View key={value} style={styles.scenarioCell}>
-                  <Control label={scenarios[value]} selected={scenario === value} tile={scenarioColumns === 2}
-                    onPress={() => { mock.setScenario(value); setScenario(value) }} />
-                </View>
-              ))}
-            </View>
-          ))}
-        </View>
-      </View>}
-      {native && <View style={styles.panel} onLayout={event => {
-        const y = event.nativeEvent.layout.y
-        if (routeY.current === null && siriDestination) scrollView.current?.scrollTo({ y })
-        routeY.current = y
-      }}>
+      {native && <View style={styles.panel}>
         <Text accessibilityRole="header" style={styles.kicker}>Walking directions</Text>
         <RouteCard route={frame?.route.source === 'google' ? frame.route : undefined} />
-        <GoogleRoute onRoute={onRoute} siriDestination={status === 'idle' || status === 'starting' ? undefined : siriDestination} />
       </View>}
-      {!native && <View style={styles.panel}>
-        <Text accessibilityRole="header" style={styles.kicker}>Simulated route</Text>
-        <TextInput accessibilityLabel="Simulated destination" style={styles.input} value={destination}
-          onChangeText={setDestination} onSubmitEditing={() => mock.setDestination(destination)} returnKeyType="go" />
-        <Control label="Set destination" onPress={() => mock.setDestination(destination)} />
-        <RouteCard route={frame?.route.source === 'simulated' ? frame.route : undefined} />
-      </View>}
-      {!native && <View style={styles.panel}>
-        <Text accessibilityRole="header" style={styles.kicker}>Simulated belt</Text>
-        {frame?.belt.battery != null && <Text style={styles.muted}>{frame.belt.battery}% battery</Text>}
-        <Control label={connected ? 'Disconnect belt' : 'Reconnect belt'} onPress={() => {
-          mock.setConnected(!connected)
-          setConnected(!connected)
-        }} />
-      </View>}
-      <View style={styles.settings}>
-        <Control label="Testing and data tools" expanded={showTools} onPress={() => setShowTools(!showTools)} />
-        {native && <Control label="Switch to simulation" onPress={() => setSensorMode(false)} />}
-      </View>
-      {showTools && <>
       <View style={styles.panel}>
         <Text accessibilityRole="header" style={styles.kicker}>Sensor readings</Text>
-        <View style={styles.row}>{ZONE_NAMES.map((name, i) => (
-          <View key={name} accessible accessibilityLabel={`${name}: ${frame?.belt.connected && (frame.command.motors[i] ?? 0) > 0 ? 'cue active' : 'idle'}`} style={[styles.motor,
-            frame?.belt.connected && (frame.command.motors[i] ?? 0) > 0 && (cue === 'obstacle' ? styles.motorAlert : styles.motorOn)]} />
-        ))}</View>
+        <Text accessibilityRole="header" style={styles.readoutLabel}>{native ? 'Buzzer commands' : 'Simulated buzzer commands'}</Text>
+        {!buzzerConnected && <Text style={styles.muted}>Belt not connected</Text>}
+        <View style={styles.row}>{['Left', 'Front', 'Right'].map((name, i) => {
+          const active = buzzerConnected && (cue === 'direction' || cue === 'obstacle') && buzzerLevels[i] > 0
+          const state = active ? cue === 'obstacle' ? 'Warning' : 'Active' : 'Off'
+          return <View key={name} accessible accessibilityLabel={`${name} buzzer, ${state}`}
+            style={[styles.buzzer, active && (cue === 'obstacle' ? styles.motorAlert : styles.motorOn)]}>
+            <Text style={[styles.buzzerLabel, active && styles.buzzerActiveText]}>{name}</Text>
+            <Text style={[styles.buzzerState, active && styles.buzzerActiveText]}>{state}</Text>
+          </View>
+        })}</View>
+        <Text accessibilityRole="header" style={styles.readoutLabel}>LiDAR distance</Text>
         {ZONE_NAMES.map((name, i) => <View style={styles.zone} key={name}>
           <Text style={styles.muted}>{name}</Text>
           <Text style={styles.value}>{frame?.observation.zones[i]?.toFixed(2) ?? '—'} m</Text>
@@ -451,9 +504,48 @@ export default function App() {
           <Text style={styles.muted}>{streamStatus}</Text>
         </>}
       </View>
+      {nativeDepth && !native && <Control label="Use iPhone LiDAR" primary onPress={() => setSensorMode(true)} />}
+      {!native && <View style={styles.panel}>
+        <Text accessibilityRole="header" style={styles.kicker}>Scenario</Text>
+        <View style={styles.scenarioList}>
+          {Array.from({ length: Math.ceil(scenarioChoices.length / scenarioColumns) }, (_, row) => (
+            <View key={row} style={styles.scenarioRow}>
+              {scenarioChoices.slice(row * scenarioColumns, (row + 1) * scenarioColumns).map(value => (
+                <View key={value} style={styles.scenarioCell}>
+                  <Control label={scenarios[value]} selected={scenario === value} tile={scenarioColumns === 2}
+                    onPress={() => { mock.setScenario(value); setScenario(value) }} />
+                </View>
+              ))}
+            </View>
+          ))}
+        </View>
+      </View>}
+      {!native && <View style={styles.panel}>
+        <Text accessibilityRole="header" style={styles.kicker}>Simulated route</Text>
+        <TextInput accessibilityLabel="Simulated destination" style={styles.input} value={destination}
+          onChangeText={setDestination} onSubmitEditing={() => mock.setDestination(destination)} returnKeyType="go" />
+        <Control label="Set destination" onPress={() => mock.setDestination(destination)} />
+        <RouteCard route={frame?.route.source === 'simulated' ? frame.route : undefined} />
+      </View>}
+      {!native && <View style={styles.panel}>
+        <Text accessibilityRole="header" style={styles.kicker}>Simulated belt</Text>
+        {frame?.belt.battery != null && <Text style={styles.muted}>{frame.belt.battery}% battery</Text>}
+        <Control label={connected ? 'Disconnect belt' : 'Reconnect belt'} onPress={() => {
+          mock.setConnected(!connected)
+          setConnected(!connected)
+        }} />
+      </View>}
+      {native && <Control label="Switch to simulation" onPress={() => setSensorMode(false)} />}
       </>}
     </ScrollView>
   )
+}
+
+function HomeButton({ label, onPress, largeText }: { label: string; onPress: () => void; largeText: boolean }) {
+  return <Pressable accessibilityRole="button" onPress={onPress}
+    style={({ pressed }) => [styles.homeButton, largeText && styles.homeIntrinsic, pressed && styles.homeButtonPressed]}>
+    <Text style={styles.homeButtonText}>{label}</Text>
+  </Pressable>
 }
 
 const styles = StyleSheet.create({
@@ -472,6 +564,19 @@ const styles = StyleSheet.create({
   readout: { gap: 4 },
   readoutLabel: { color: terminal.muted, fontSize: 16, fontWeight: '600' },
   settings: { gap: 8 },
+  hidden: { display: 'none' },
+  homeContent: { flexGrow: 1, paddingHorizontal: 28, paddingBottom: 24, gap: 12 },
+  homeHeader: { alignItems: 'flex-end' },
+  settingsButton: { minHeight: 44, justifyContent: 'center', paddingHorizontal: 10 },
+  settingsText: { fontSize: 18, fontWeight: '700' },
+  homeButton: { flexGrow: 1, flexBasis: 0, minHeight: 104, backgroundColor: palette.cream, borderWidth: 3,
+    borderColor: '#000', borderRadius: 28, justifyContent: 'center', padding: 16 },
+  homeButtonPressed: { opacity: 0.82 },
+  homeButtonText: { color: '#000', fontSize: 36, fontWeight: '800', textAlign: 'center' },
+  homeReadout: { flexGrow: 1, flexBasis: 0, minHeight: 144, justifyContent: 'center', paddingVertical: 12 },
+  homeIntrinsic: { flexBasis: 'auto' },
+  homeStatus: { fontSize: 36, fontWeight: '800', textAlign: 'center' },
+  homeStatusCompact: { fontSize: 30 },
   alertPanel: { backgroundColor: '#342418' },
   row: { flexDirection: 'row', gap: 8, flexWrap: 'wrap' },
   scenarioList: { gap: 8 },
@@ -480,7 +585,10 @@ const styles = StyleSheet.create({
   zone: { flexDirection: 'row', justifyContent: 'space-between' },
   input: { color: terminal.text, fontSize: 18, minHeight: 56, borderWidth: 1, borderColor: terminal.border,
     borderRadius: 12, backgroundColor: terminal.background, paddingHorizontal: 14, paddingVertical: 12 },
-  motor: { flex: 1, minWidth: 30, height: 16, borderWidth: 1, borderColor: '#32404c', backgroundColor: '#182430' },
+  buzzer: { flex: 1, minWidth: 78, padding: 8, borderRadius: 8, borderWidth: 1, borderColor: '#32404c', backgroundColor: '#182430' },
+  buzzerLabel: { color: terminal.text, fontSize: 17, fontWeight: '700', textAlign: 'center' },
+  buzzerState: { color: terminal.muted, fontSize: 15, textAlign: 'center' },
+  buzzerActiveText: { color: '#111' },
   motorOn: { backgroundColor: '#8ce0f4' },
   motorAlert: { backgroundColor: '#ffc78e' },
 })
