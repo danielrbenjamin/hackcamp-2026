@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ComponentRef } from 'react'
-import { AccessibilityInfo, AppState, Keyboard, Platform, Pressable, ScrollView, StatusBar, StyleSheet, Text, TextInput, useWindowDimensions, View } from 'react-native'
+import { AccessibilityInfo, AppState, Keyboard, Platform, Pressable, SafeAreaView, ScrollView, StatusBar, StyleSheet, Text, TextInput, useWindowDimensions, View } from 'react-native'
 import { File } from 'expo-file-system'
 import { shareAsync } from 'expo-sharing'
 import { ZONE_NAMES, type BeltStatus, type DenseScan, type DepthPreview, type ModelPreview, type Route, type Telemetry } from '../shared/contracts'
@@ -29,7 +29,7 @@ function hasFreshRouteLocation(route: Route): boolean {
 }
 
 export default function App() {
-  const { width, fontScale } = useWindowDimensions()
+  const { width, height, fontScale } = useWindowDimensions()
   const scenarioColumns = width >= 380 && fontScale <= 1.15 ? 2 : 1
   const [mock] = useState(() => {
     const provider = createMock()
@@ -440,11 +440,14 @@ export default function App() {
   const manualRoute = screen === 'route'
   const routeOpen = manualRoute || voiceRoute
   const homeLayout = screen === 'home' || voiceRoute
+  const compactHome = width < 360 || height < 680
 
   return (
-    <ScrollView ref={scrollView} style={[styles.page, homeLayout && { backgroundColor: homeColor }]}
+    <SafeAreaView style={[styles.page, homeLayout && { backgroundColor: homeColor }]}>
+    <ScrollView ref={scrollView} style={styles.scroll}
       contentContainerStyle={[styles.content, homeLayout && styles.homeContent]}
-      contentInsetAdjustmentBehavior="automatic" keyboardDismissMode="on-drag" keyboardShouldPersistTaps="handled">
+      contentInsetAdjustmentBehavior="never" scrollEnabled={!homeLayout} bounces={!homeLayout}
+      keyboardDismissMode="on-drag" keyboardShouldPersistTaps="handled">
       <StatusBar barStyle={homeLayout && homeColor === palette.yellow ? 'dark-content' : 'light-content'} />
       {!homeLayout && <View style={styles.settings}>
         <Control label={manualRoute ? 'Back to Advanced' : screen === 'advanced' ? 'Back to Settings' : 'Back to Home'}
@@ -454,15 +457,17 @@ export default function App() {
         </Text>
       </View>}
       {homeLayout && <HomeButton label={native ? beltEnabled ? 'Disconnect Belt' : 'Connect Belt' : connected ? 'Disconnect Belt' : 'Connect Belt'}
-        onPress={toggleBelt} largeText={fontScale > 1.15} />}
-      <View style={homeLayout ? [styles.homeReadout, !voiceRoute && fontScale > 1.15 && styles.homeIntrinsic]
+        onPress={toggleBelt} compact={compactHome} />}
+      <View style={homeLayout ? styles.homeReadout
         : manualRoute ? styles.panel : styles.hidden}>
           {homeLayout && <Text ref={voiceRoute ? undefined : screenHeading} accessible accessibilityRole="header"
-            style={[styles.homeStatus, width < 360 && styles.homeStatusCompact, voiceRoute && styles.routeStatus, { color: homeInk }]}>{homeStatus}</Text>}
+            adjustsFontSizeToFit numberOfLines={3}
+            style={[styles.homeStatus, compactHome && styles.homeStatusCompact, voiceRoute && styles.routeStatus, { color: homeInk }]}>{homeStatus}</Text>}
           {screen === 'home' && showSiriPrompt && !hasRoute &&
-            <Text style={[styles.siriPrompt, { color: homeInk }]}>{native ? siriPrompt : simulatedRoutePrompt}</Text>}
+            <Text adjustsFontSizeToFit numberOfLines={5}
+              style={[styles.siriPrompt, { color: homeInk }]}>{native ? siriPrompt : simulatedRoutePrompt}</Text>}
           {screen === 'home' && voiceStatus &&
-            <Text style={[styles.siriPrompt, { color: homeInk }]}>{voiceStatus}</Text>}
+            <Text adjustsFontSizeToFit numberOfLines={3} style={[styles.siriPrompt, { color: homeInk }]}>{voiceStatus}</Text>}
           {screen === 'home' && <View style={styles.homeSettings}>
             <Pressable accessibilityRole="button" accessibilityLabel="Settings"
               accessibilityActions={[{ name: 'activate' }]}
@@ -489,7 +494,7 @@ export default function App() {
         hint={native && !voiceRoute && !hasRoute && !voiceListening
           ? nativeDepth?.listenForDestination ? 'Wait for the vibration, then say a place or address.' : 'Hear how to set a destination with Siri.'
           : undefined}
-        onPress={routeAction} largeText={fontScale > 1.15} />}
+        onPress={routeAction} compact={compactHome} />}
       {screen === 'settings' && <Control label="Advanced" onPress={() => setScreen('advanced')} />}
       {screen === 'advanced' && <>
       <View style={styles.banner}>
@@ -518,9 +523,9 @@ export default function App() {
       <View style={styles.panel}>
         <Text accessibilityRole="header" style={styles.kicker}>Sensor readings</Text>
         <Text accessibilityRole="header" style={styles.readoutLabel}>{native ? 'Buzzer commands' : 'Simulated buzzer commands'}</Text>
-        {!buzzerConnected && <Text style={styles.muted}>Belt not connected</Text>}
+        {!buzzerConnected && <Text style={styles.muted}>Belt disconnected. Showing intended commands.</Text>}
         <View style={styles.row}>{['Left', 'Front', 'Right'].map((name, i) => {
-          const active = buzzerConnected && (cue === 'direction' || cue === 'obstacle') && buzzerLevels[i] > 0
+          const active = (cue === 'direction' || cue === 'obstacle') && buzzerLevels[i] > 0
           const state = active ? cue === 'obstacle' ? 'Warning' : 'Active' : 'Off'
           return <View key={name} accessible accessibilityLabel={`${name} buzzer, ${state}`}
             style={[styles.buzzer, active && (cue === 'obstacle' ? styles.motorAlert : styles.motorOn)]}>
@@ -604,18 +609,21 @@ export default function App() {
       {native && <Control label="Switch to simulation" onPress={() => setSensorMode(false)} />}
       </>}
     </ScrollView>
+    </SafeAreaView>
   )
 }
 
-function HomeButton({ label, hint, onPress, largeText }: { label: string; hint?: string; onPress: () => void; largeText: boolean }) {
+function HomeButton({ label, hint, onPress, compact }: { label: string; hint?: string; onPress: () => void; compact: boolean }) {
   return <Pressable accessibilityRole="button" accessibilityLabel={label} accessibilityHint={hint} onPress={onPress}
-    style={({ pressed }) => [styles.homeButton, largeText && styles.homeIntrinsic, pressed && styles.homeButtonPressed]}>
-    <Text style={styles.homeButtonText}>{label}</Text>
+    style={({ pressed }) => [styles.homeButton, pressed && styles.homeButtonPressed]}>
+    <Text adjustsFontSizeToFit numberOfLines={2}
+      style={[styles.homeButtonText, compact && styles.homeStatusCompact]}>{label}</Text>
   </Pressable>
 }
 
 const styles = StyleSheet.create({
-  page: { backgroundColor: terminal.background },
+  page: { flex: 1, backgroundColor: terminal.background },
+  scroll: { flex: 1 },
   content: { padding: 20, paddingTop: Platform.OS === 'web' ? 28 : 16, paddingBottom: 32, gap: 16,
     width: '100%', maxWidth: 560, alignSelf: 'center' },
   kicker: { color: terminal.text, fontSize: 24, fontWeight: '700' },
@@ -631,23 +639,22 @@ const styles = StyleSheet.create({
   readoutLabel: { color: terminal.muted, fontSize: 16, fontWeight: '600' },
   settings: { gap: 8 },
   hidden: { display: 'none' },
-  homeContent: { flexGrow: 1, paddingHorizontal: 28, paddingBottom: 24, gap: 12 },
+  homeContent: { flex: 1, paddingHorizontal: 20, paddingVertical: 10, gap: 8 },
   homeSettings: { alignItems: 'center' },
   settingsButton: { minHeight: 44, justifyContent: 'center', paddingHorizontal: 10 },
   settingsText: { fontSize: 18, fontWeight: '700' },
-  homeButton: { flexGrow: 1, flexBasis: 0, minHeight: 104, backgroundColor: palette.cream, borderWidth: 3,
-    borderColor: '#000', borderRadius: 28, justifyContent: 'center', padding: 16 },
+  homeButton: { height: '26%', minHeight: 56, backgroundColor: palette.cream, borderWidth: 3,
+    borderColor: '#000', borderRadius: 28, justifyContent: 'center', padding: 10 },
   homeButtonPressed: { opacity: 0.82 },
   homeButtonText: { color: '#000', fontSize: 36, fontWeight: '800', textAlign: 'center' },
-  homeReadout: { flexGrow: 1, flexBasis: 0, minHeight: 188, justifyContent: 'center', paddingVertical: 12 },
-  homeIntrinsic: { flexBasis: 'auto' },
-  homeStatus: { fontSize: 36, fontWeight: '800', textAlign: 'center' },
+  homeReadout: { flex: 1, minHeight: 0, justifyContent: 'center' },
+  homeStatus: { flexShrink: 1, fontSize: 36, fontWeight: '800', textAlign: 'center' },
   homeStatusCompact: { fontSize: 30 },
   routeStatus: { fontSize: 22, marginBottom: 8 },
-  routeEditor: { flex: 1, minHeight: 100, backgroundColor: terminal.surface, borderRadius: 14 },
+  routeEditor: { flex: 1, minHeight: 0, backgroundColor: terminal.surface, borderRadius: 14 },
   routeEditorContent: { padding: 12, gap: 10 },
   routeHeading: { color: terminal.text, fontSize: 20, fontWeight: '700' },
-  siriPrompt: { fontSize: 16, textAlign: 'center', marginTop: 8 },
+  siriPrompt: { flexShrink: 1, fontSize: 16, textAlign: 'center', marginTop: 8 },
   alertPanel: { backgroundColor: '#342418' },
   row: { flexDirection: 'row', gap: 8, flexWrap: 'wrap' },
   scenarioList: { gap: 8 },
