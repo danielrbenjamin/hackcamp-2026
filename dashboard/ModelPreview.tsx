@@ -3,7 +3,7 @@ import type { ModelPreview as Preview } from '../shared/contracts'
 import { PointCloud } from './PointCloud'
 import { glassBearing } from './modelColors'
 import { distancePalette } from './DepthImages'
-import { denseScanData, orientImagePoint, orientRasterIndex, scanDisplayRotation } from './denseScan'
+import { denseScanData, orientImagePoint, scanDisplayRotation } from './denseScan'
 
 const glass = [84, 203, 237]
 const riser = [248, 166, 96]
@@ -31,32 +31,32 @@ function modelScene(frame: Preview) {
   const depth = frame.depthPreview
   const width = scan?.width ?? depth?.width ?? 128
   const height = scan?.height ?? depth?.height ?? 96
-  const rotation = scanDisplayRotation(scan)
-  const sideways = Math.abs(rotation) === 90
-  return { scan, depth, width, height, rotation, displayWidth: sideways ? height : width, displayHeight: sideways ? width : height }
+  return { scan, depth, width, height }
 }
 
-function SceneImage({ scene, muted }: { scene: ReturnType<typeof modelScene>; muted: boolean }) {
+function renderSceneImage(scene: ReturnType<typeof modelScene>, muted: boolean) {
+  const { scan, depth, width, height } = scene
+  if (!scan && !depth) return undefined
+  const pixels = new ImageData(width, height)
+  const raster = scan ? denseScanData(scan) : undefined
+  const samples = !raster && depth ? atob(depth.samples) : ''
+  const colors = muted ? mutedDepthColors : depthColors
+  for (let i = 0; i < width * height; i++) {
+    const meters = raster?.getFloat32(i * 8, true)
+    const cm = meters === undefined
+      ? (samples.charCodeAt(i * 2) | (samples.charCodeAt(i * 2 + 1) << 8)) & 0x3fff
+      : Number.isFinite(meters) && meters > 0 ? Math.max(1, Math.round(meters * 100)) : 0
+    pixels.data.set(colors[Math.min(cm, 500)], i * 4)
+  }
+  return pixels
+}
+
+function SceneImage({ pixels }: { pixels: ImageData }) {
   const canvas = useRef<HTMLCanvasElement>(null)
-  const { scan, depth, width, height, displayWidth, displayHeight, rotation } = scene
   useEffect(() => {
-    const context = canvas.current?.getContext('2d')
-    if (!context || (!scan && !depth)) return
-    const pixels = context.createImageData(displayWidth, displayHeight)
-    const raster = scan ? denseScanData(scan) : undefined
-    const samples = !raster && depth ? atob(depth.samples) : ''
-    const colors = muted ? mutedDepthColors : depthColors
-    for (let i = 0; i < width * height; i++) {
-      const meters = raster?.getFloat32(i * 8, true)
-      const cm = meters === undefined
-        ? (samples.charCodeAt(i * 2) | (samples.charCodeAt(i * 2 + 1) << 8)) & 0x3fff
-        : Number.isFinite(meters) && meters > 0 ? Math.max(1, Math.round(meters * 100)) : 0
-      const index = orientRasterIndex(i, width, height, rotation)
-      pixels.data.set(colors[Math.min(cm, 500)], index * 4)
-    }
-    context.putImageData(pixels, 0, 0)
-  }, [scan, depth, width, height, displayWidth, displayHeight, muted, rotation])
-  return <canvas ref={canvas} width={displayWidth} height={displayHeight} role="img" aria-label="Depth image from the model frame" />
+    canvas.current?.getContext('2d')?.putImageData(pixels, 0, 0)
+  }, [pixels])
+  return <canvas ref={canvas} width={pixels.width} height={pixels.height} role="img" aria-label="Depth image from the model frame" />
 }
 
 function PersonBoxes({ people, width, height, rotation = 0 }: {
@@ -140,10 +140,13 @@ export const ModelPreview = memo(function ModelPreview({ preview, view, mutedDep
   const matchingScan = preview?.denseScan?.timeMs === preview?.timeMs ? preview?.denseScan : undefined
   const masks = preview?.masks
   const bearing = useMemo(() => matchingScan && masks ? glassBearing(matchingScan, masks) : undefined, [matchingScan, masks])
-  if (!preview) return <p className="waiting">On iPhone, enable Preview hazard models and Share 3D scan with dashboard.</p>
+  const scene = useMemo(() => preview ? modelScene(preview) : undefined, [preview])
+  const pixels = useMemo(() => view !== 'scan' && scene ? renderSceneImage(scene, mutedDepth) : undefined, [scene, mutedDepth, view])
+  if (!preview || !scene) return <p className="waiting">On iPhone, enable Preview hazard models and Share 3D scan with dashboard.</p>
 
-  const scene = modelScene(preview)
-  const { rotation, displayWidth, displayHeight } = scene
+  const { width, height } = scene
+  const rotation = view === 'scan' ? scanDisplayRotation(scene.scan) : 0
+  const sideways = Math.abs(rotation) === 90
   const hasDepth = !!(scene.scan || scene.depth)
   const alignedScan = !!preview.denseScan || !!preview.scan?.imageCoordinates
   const unlocated = preview.people.filter(person => !person.position || person.position[2] < 0.08).length
@@ -172,7 +175,7 @@ export const ModelPreview = memo(function ModelPreview({ preview, view, mutedDep
           coordinates: preview.scan?.imageCoordinates,
           content: <ScanMasks masks={preview.masks} />,
           upright: <svg width={96} height={96}>
-            <PersonBoxes people={preview.people} width={displayWidth} height={displayHeight} rotation={rotation} />
+            <PersonBoxes people={preview.people} width={sideways ? height : width} height={sideways ? width : height} rotation={rotation} />
           </svg>,
         } : undefined}
         colorLabel={(preview.denseScan?.cameraColor || preview.scan?.pointColors) ? 'Camera color with model detections' : 'Height colors with model detections'} />
@@ -185,16 +188,16 @@ export const ModelPreview = memo(function ModelPreview({ preview, view, mutedDep
         {!alignedScan && <span>Rebuild Lantern for aligned masks and boxes in Front view.</span>}
         {unlocated > 0 && <span>{unlocated} person {unlocated === 1 ? 'box is' : 'boxes are'} available only in 2D.</span>}
       </div>
-    </> : <p className="waiting">No 3D scan arrived with this model frame. Check scan sharing and the installed iPhone build.</p>
+    </> : <p className="waiting">Waiting for a model frame with a 3D scan. On iPhone, turn on Share 3D scan with dashboard.</p>
       : view === 'combined' ? <div className="model-images model-combined">
       <figure>
         <figcaption>{hasDepth ? 'Depth with detections' : 'Detections'}<span>{preview.people.length} {preview.people.length === 1 ? 'person' : 'people'}</span></figcaption>
-        <div className="model-scene" style={{ aspectRatio: displayWidth / displayHeight }}>
-          {hasDepth && <SceneImage scene={scene} muted={mutedDepth} />}
+        <div className="model-scene" style={{ aspectRatio: width / height }}>
+          {pixels && <SceneImage pixels={pixels} />}
           <svg viewBox="0 0 96 96" preserveAspectRatio="none" role="img" aria-label="Glass and stair segmentation masks">
-            <g transform={`rotate(${rotation} 48 48)`}><ScanMasks masks={preview.masks} /></g>
+            <ScanMasks masks={preview.masks} />
           </svg>
-          <PersonBoxes people={preview.people} width={displayWidth} height={displayHeight} rotation={rotation} />
+          <PersonBoxes people={preview.people} width={width} height={height} />
         </div>
         <ModelKey />
       </figure>
@@ -204,10 +207,10 @@ export const ModelPreview = memo(function ModelPreview({ preview, view, mutedDep
         const hasDetection = mask && /[^\x00]/.test(atob(mask.labels))
         return <figure key={kind}>
           <figcaption>{kind === 'glass' ? 'Glass' : 'Stairs'}<span>{mask ? hasDetection ? 'Detected' : 'No detection' : 'No mask'}</span></figcaption>
-          <div className="model-scene" style={{ aspectRatio: displayWidth / displayHeight }}>
-            {hasDepth && <SceneImage scene={scene} muted={mutedDepth} />}
+          <div className="model-scene" style={{ aspectRatio: width / height }}>
+            {pixels && <SceneImage pixels={pixels} />}
             {mask && <svg viewBox="0 0 96 96" preserveAspectRatio="none" role="img" aria-label={`${kind} segmentation mask`}>
-              <g transform={`rotate(${rotation} 48 48)`}><ScanMasks masks={[mask]} /></g>
+              <ScanMasks masks={[mask]} />
             </svg>}
           </div>
           <span>{preview.models[kind]}</span>
@@ -216,9 +219,9 @@ export const ModelPreview = memo(function ModelPreview({ preview, view, mutedDep
       })}
       <figure>
         <figcaption>People<span>{preview.people.length} detected</span></figcaption>
-        <div className="model-scene" style={{ aspectRatio: displayWidth / displayHeight }}>
-        {hasDepth && <SceneImage scene={scene} muted={mutedDepth} />}
-        <PersonBoxes people={preview.people} width={displayWidth} height={displayHeight} rotation={rotation} />
+        <div className="model-scene" style={{ aspectRatio: width / height }}>
+        {pixels && <SceneImage pixels={pixels} />}
+        <PersonBoxes people={preview.people} width={width} height={height} />
         </div>
         <span>{preview.models.person}</span>
         <ModelKey kind="person" />

@@ -30,9 +30,9 @@ test('warning telemetry updates independently and a new stream clears cached vis
   Reflect.apply(plugin.configureServer, undefined, [server])
   assert.ok(handle)
   const send = handle
-  function request(method: string, url: string, stream: string, body?: unknown) {
+  function request(method: string, url: string, stream: string, body?: unknown, headers?: Record<string, string>) {
     const req = Object.assign(new EventEmitter(), {
-      method, url, headers: { authorization: 'Bearer test-token', 'x-lantern-stream': stream }, setEncoding() {},
+      method, url, headers: { authorization: 'Bearer test-token', 'x-lantern-stream': stream, ...headers }, setEncoding() {},
     })
     let status = 200
     let payload: string | undefined
@@ -49,7 +49,8 @@ test('warning telemetry updates independently and a new stream clears cached vis
   const loop = createLoop(mock.providers)
   const frame = loop.tick()
   assert.equal(request('POST', '/', 'first', frame).status, 204)
-  assert.equal(request('POST', '/visuals', 'first', { ...frame, modelPreview: preview(96) }).status, 204)
+  const complete = { ...preview(96), scan: { points: [[0, 0, 1]] } }
+  assert.equal(request('POST', '/visuals', 'first', { ...frame, modelPreview: complete }).status, 204)
   mock.setScenario('obstacle')
   assert.equal(request('POST', '/', 'first', loop.tick()).status, 204)
   assert.equal(request('GET', '/', 'first').data.frame.command.cue, 'obstacle')
@@ -59,6 +60,29 @@ test('warning telemetry updates independently and a new stream clears cached vis
   assert.equal(request('POST', '/visuals', 'first', { ...frame, modelPreview: partial }).status, 204)
   assert.equal(request('GET', '/visuals', 'first').data.frame.modelPreview.timeMs, 200)
   assert.equal(request('GET', '/complete-preview', 'first').data.preview.timeMs, 100)
+  const denseScan = { width: 1, height: 1, timeMs: 400, intrinsics: [1, 1, 0.5, 0.5],
+    basis: [1, 0, 0, 0, 1, 0, 0, 0, 1], samples: Buffer.alloc(8).toString('base64'), cameraColor: false }
+  assert.equal(request('POST', '/visuals', 'first', { ...frame, observation: { ...frame.observation, denseScan } }).status, 204)
+  const sharedScanHeaders = { 'x-lantern-reuse-scan': '1', 'x-lantern-model-uses-scan': '1' }
+  assert.equal(request('POST', '/visuals', 'first', { ...frame, modelPreview: { ...preview(96), timeMs: 401 } }, sharedScanHeaders).status, 409)
+  assert.equal(request('POST', '/visuals', 'first', { ...frame, modelPreview: { ...preview(96), timeMs: 400 } }, sharedScanHeaders).status, 204)
+  const reused = request('GET', '/visuals', 'first').data.frame
+  assert.deepEqual(reused.observation.denseScan, denseScan)
+  assert.deepEqual(reused.modelPreview.denseScan, denseScan)
+  const firstDownload = request('GET', '/visuals', 'first', undefined, { 'x-lantern-visual-stream': '' }).data
+  assert.equal(firstDownload.modelUsesScan, true)
+  assert.deepEqual(firstDownload.frame.observation.denseScan, denseScan)
+  assert.equal(firstDownload.frame.modelPreview.denseScan, undefined)
+  const nextDownload = request('GET', '/visuals', 'first', undefined, {
+    'x-lantern-visual-stream': 'first', 'x-lantern-known-scan': '400', 'x-lantern-known-preview': '400/50/undefined',
+  }).data
+  assert.equal(nextDownload.reuseScan, true)
+  assert.equal(nextDownload.reusePreview, true)
+  assert.equal(nextDownload.frame.observation.denseScan, undefined)
+  assert.equal(nextDownload.frame.modelPreview, undefined)
+  assert.equal(request('POST', '/visuals', 'first', { ...frame, modelPreview: { ...preview(96), timeMs: 300 } }).status, 204)
+  assert.equal(request('GET', '/visuals', 'first').data.frame.modelPreview.timeMs, 300)
+  assert.equal(request('GET', '/complete-preview', 'first').data.preview.timeMs, 400)
   assert.equal(request('POST', '/', 'second', frame).status, 204)
   assert.equal(request('GET', '/visuals', 'second').data, null)
   assert.equal(request('GET', '/complete-preview', 'second').data, null)

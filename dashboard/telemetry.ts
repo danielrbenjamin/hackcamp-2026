@@ -1,5 +1,5 @@
 import type { Plugin } from 'vite'
-import { MAX_DEPTH_POINTS, MAX_DEPTH_PREVIEW_DIMENSION, MAX_SCAN_PIXELS, type DenseScan, type DepthPreview, type ModelPreview } from '../shared/contracts.ts'
+import { MAX_DEPTH_POINTS, MAX_DEPTH_PREVIEW_DIMENSION, MAX_SCAN_PIXELS, type DenseScan, type DepthPreview, type ModelPreview, type Telemetry } from '../shared/contracts.ts'
 import { validHazards } from '../shared/hazards.ts'
 
 export function validPersonPreview(value: unknown): value is ModelPreview['people'][number] {
@@ -77,7 +77,7 @@ export function validModelPreview(preview: unknown) {
 
 export function telemetryRelay(token: string | undefined): Plugin {
   let latest: { receivedAt: number; frame: unknown; stream?: string } | null = null
-  let visuals: { receivedAt: number; frame: unknown; stream?: string } | null = null
+  let visuals: { receivedAt: number; frame: Telemetry; stream: string } | null = null
   let completePreview: { receivedAt: number; preview: ModelPreview; stream: string } | null = null
   return {
     name: 'navigation-telemetry',
@@ -96,6 +96,21 @@ export function telemetryRelay(token: string | undefined): Plugin {
           const tag = result ? `"${result.receivedAt}"` : '"empty"'
           response.setHeader('ETag', tag)
           if (request.headers['if-none-match'] === tag) { response.writeHead(304).end(); return }
+          if (visualLane && visuals && typeof request.headers['x-lantern-visual-stream'] === 'string') {
+            const { observation, modelPreview } = visuals.frame
+            const scan = observation.denseScan
+            const sameStream = request.headers['x-lantern-visual-stream'] === visuals.stream
+            const reuseScan = sameStream && !!scan && request.headers['x-lantern-known-scan'] === String(scan.timeMs)
+            const reusePreview = sameStream && !!modelPreview && request.headers['x-lantern-known-preview'] ===
+              `${modelPreview.timeMs}/${modelPreview.latencyMs}/${modelPreview.partial}`
+            const modelUsesScan = !reusePreview && !!scan && modelPreview?.denseScan?.timeMs === scan.timeMs
+            response.end(JSON.stringify({ ...visuals, reuseScan, reusePreview, modelUsesScan, frame: {
+              ...visuals.frame,
+              observation: reuseScan ? { ...observation, denseScan: undefined, depthPreview: undefined, smoothedDepthPreview: undefined } : observation,
+              modelPreview: reusePreview ? undefined : modelUsesScan ? { ...modelPreview, denseScan: undefined } : modelPreview,
+            } }))
+            return
+          }
           response.end(JSON.stringify(result))
           return
         }
@@ -140,15 +155,28 @@ export function telemetryRelay(token: string | undefined): Plugin {
             delete observation.scanPose
             if (visualLane) {
               if (!stream || latest?.stream !== stream) { response.writeHead(409).end(); return }
+              if (request.headers['x-lantern-reuse-scan'] === '1' && observation.denseScan === undefined) {
+                const previous = visuals?.stream === stream ? visuals.frame.observation : undefined
+                if (!previous?.denseScan) { response.writeHead(409).end(); return }
+                observation.denseScan = previous.denseScan
+                observation.depthPreview = previous.depthPreview
+                observation.smoothedDepthPreview = previous.smoothedDepthPreview
+              }
               if (request.headers['x-lantern-reuse-preview'] === '1' && frame.modelPreview === undefined) {
-                const previous = visuals?.stream === stream ? (visuals?.frame as { modelPreview?: unknown })?.modelPreview : undefined
+                const previous = visuals?.stream === stream ? visuals.frame.modelPreview : undefined
                 if (!previous) { response.writeHead(409).end(); return }
                 frame.modelPreview = previous
+              }
+              if (request.headers['x-lantern-model-uses-scan'] === '1') {
+                if (!frame.modelPreview || !observation.denseScan ||
+                  frame.modelPreview.timeMs !== observation.denseScan.timeMs) { response.writeHead(409).end(); return }
+                frame.modelPreview.denseScan = observation.denseScan
               }
               visuals = { receivedAt: Date.now(), frame, stream }
               const preview = frame.modelPreview as ModelPreview | undefined
               if (!preview) completePreview = null
-              else if (!preview.partial && completePreview?.preview !== preview) {
+              else if (!preview.partial && completePreview?.preview !== preview &&
+                (preview.denseScan || preview.scan || !(completePreview?.preview.denseScan || completePreview?.preview.scan))) {
                 completePreview = { receivedAt: visuals.receivedAt, preview, stream }
               }
             } else {

@@ -270,7 +270,7 @@ export default function App() {
     let sentAt = 0
     let visualKey = ''
     let sentPreviewKey = ''
-    let sentCompletePreview: ModelPreview | undefined
+    let sentScanTime: number | undefined
     const interval = setInterval(() => {
       const value = latestFrame.current
       if (request || !value || value.observation.timeMs <= sentAt || AppState.currentState === 'background') return
@@ -293,34 +293,47 @@ export default function App() {
       const scan = latestDenseScan.current
       const freshScan = scan && Math.abs(value.observation.timeMs - scan.denseScan.timeMs) < 900 ? scan : undefined
       const complete = latestCompletePreview.current
-      const pendingComplete = complete && complete !== sentCompletePreview ? complete : undefined
-      const preview = previewModels ? pendingComplete ?? latestModelPreview.current : undefined
+      const latest = latestModelPreview.current
+      const displayPreview = complete?.denseScan || complete?.scan ? complete : latest ?? complete
+      const preview = previewModels ? displayPreview : undefined
       const previewKey = preview ? `${preview.timeMs}/${preview.latencyMs}/${preview.partial}` : ''
       const reusePreview = previewKey !== '' && previewKey === sentPreviewKey
+      const scanTime = freshScan?.denseScan.timeMs
+      const reuseScan = scanTime !== undefined && scanTime === sentScanTime
+      const sharedModelScan = !reusePreview && scanTime !== undefined && preview?.denseScan?.timeMs === scanTime
       const legacyScan = value.observation.points || value.observation.depthPreview ? value.observation.timeMs : ''
       const key = `${freshScan?.denseScan.timeMs ?? legacyScan}/${previewKey}/${JSON.stringify(value.observation.hazards ?? null)}`
       if (key === visualKey) return
       visualRequest = new AbortController()
       const timeout = setTimeout(() => visualRequest?.abort(), 3_000)
       void fetch(`${endpoint}/visuals`, { method: 'POST', signal: visualRequest.signal,
-        headers: reusePreview ? { ...headers, 'X-Lantern-Reuse-Preview': '1' } : headers,
+        headers: {
+          ...headers,
+          ...(reusePreview ? { 'X-Lantern-Reuse-Preview': '1' } : {}),
+          ...(reuseScan ? { 'X-Lantern-Reuse-Scan': '1' } : {}),
+          ...(sharedModelScan ? { 'X-Lantern-Model-Uses-Scan': '1' } : {}),
+        },
         body: JSON.stringify(telemetrySummary({
-          ...value, modelPreview: reusePreview ? undefined : preview,
+          ...value, modelPreview: reusePreview || !preview ? undefined : {
+            ...preview,
+            denseScan: sharedModelScan ? undefined : preview.denseScan,
+            depthPreview: preview.denseScan ? undefined : preview.depthPreview,
+          },
           observation: {
             ...value.observation,
-            depthPreview: freshScan?.depthPreview ?? value.observation.depthPreview,
-            smoothedDepthPreview: freshScan?.smoothedDepthPreview ?? value.observation.smoothedDepthPreview,
-            denseScan: freshScan?.denseScan,
+            depthPreview: reuseScan ? undefined : freshScan?.depthPreview ?? value.observation.depthPreview,
+            smoothedDepthPreview: reuseScan ? undefined : freshScan?.smoothedDepthPreview ?? value.observation.smoothedDepthPreview,
+            denseScan: reuseScan ? undefined : freshScan?.denseScan,
           },
         }, true)),
       }).then(response => {
         if (response.ok) {
           visualKey = key
           sentPreviewKey = previewKey
-          if (preview && !preview.partial) sentCompletePreview = preview
+          sentScanTime = scanTime
         } else if (response.status === 409) {
           sentPreviewKey = ''
-          sentCompletePreview = undefined
+          sentScanTime = undefined
           visualKey = ''
         }
       }, () => {}).finally(() => {

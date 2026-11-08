@@ -14,6 +14,8 @@ import './style.css'
 const cueLabels = { idle: 'Waiting for guidance', direction: 'Directional cue', obstacle: 'Obstacle warning', unavailable: 'Depth unavailable' }
 const cellColors = ['#101722', '#275260', '#f5ae5e']
 type Evaluation = { model_version: string; candidate_accuracy: number; baseline_accuracy: number }
+type VisualFrame = { frame: Telemetry; stream: string }
+type VisualResponse = VisualFrame & { reuseScan?: boolean; reusePreview?: boolean; modelUsesScan?: boolean }
 
 function Dashboard() {
   const [mock] = useState(createMock)
@@ -22,7 +24,7 @@ function Dashboard() {
   const [simulation, setSimulation] = useState<Telemetry>()
   const [phone, setPhone] = useState<Telemetry>()
   const [phoneStream, setPhoneStream] = useState<string>()
-  const [phoneVisuals, setPhoneVisuals] = useState<{ frame: Telemetry; stream: string } | null>(null)
+  const [phoneVisuals, setPhoneVisuals] = useState<VisualFrame | null>(null)
   const [completePreview, setCompletePreview] = useState<{ preview: Preview; stream: string } | null>(null)
   const [phoneReceivedAt, setPhoneReceivedAt] = useState<number>()
   const [tokenInput, setTokenInput] = useState('')
@@ -85,13 +87,20 @@ function Dashboard() {
     if (!token) return
     const controller = new AbortController()
     const timers: number[] = []
-    function watch<T>(path: string, update: (data: T | null) => void, interval: number) {
+    let needsCompletePreview = false
+    let cachedVisuals: VisualFrame | null = null
+    function watch<T>(path: string, update: (data: T | null) => void, interval: number, enabled = () => true,
+      requestHeaders?: () => Record<string, string>) {
       const index = timers.length
       timers.push(0)
       let etag: string | null = null
       async function poll() {
+        if (!enabled()) {
+          if (!controller.signal.aborted) timers[index] = window.setTimeout(poll, interval)
+          return
+        }
         try {
-          const headers: Record<string, string> = { Authorization: `Bearer ${token}` }
+          const headers: Record<string, string> = { Authorization: `Bearer ${token}`, ...requestHeaders?.() }
           if (etag) headers['If-None-Match'] = etag
           const response = await fetch(`/api/telemetry/${path}`, { headers, signal: controller.signal })
           if (response.ok) {
@@ -106,13 +115,38 @@ function Dashboard() {
       }
       void poll()
     }
-    watch<{ frame: Telemetry; stream: string }>('visuals', setPhoneVisuals, 180)
-    watch<{ preview: Preview; stream: string }>('complete-preview', setCompletePreview, 350)
+    watch<VisualResponse>('visuals', data => {
+      if (data) {
+        const previous = cachedVisuals?.stream === data.stream ? cachedVisuals.frame : undefined
+        const observation = data.frame.observation
+        if (data.reuseScan && previous) {
+          observation.denseScan = previous.observation.denseScan
+          observation.depthPreview = previous.observation.depthPreview
+          observation.smoothedDepthPreview = previous.observation.smoothedDepthPreview
+        }
+        if (data.reusePreview) data.frame.modelPreview = previous?.modelPreview
+        else if (data.modelUsesScan && data.frame.modelPreview) data.frame.modelPreview.denseScan = observation.denseScan
+      }
+      cachedVisuals = data
+      const preview = cachedVisuals?.frame.modelPreview
+      needsCompletePreview = !!preview && (!!preview.partial || !(preview.denseScan || preview.scan))
+      setPhoneVisuals(cachedVisuals)
+    }, 180, undefined, () => {
+      const scan = cachedVisuals?.frame.observation.denseScan
+      const preview = cachedVisuals?.frame.modelPreview
+      return {
+        'X-Lantern-Visual-Stream': cachedVisuals?.stream ?? '',
+        'X-Lantern-Known-Scan': scan ? String(scan.timeMs) : '',
+        'X-Lantern-Known-Preview': preview ? `${preview.timeMs}/${preview.latencyMs}/${preview.partial}` : '',
+      }
+    })
+    watch<{ preview: Preview; stream: string }>('complete-preview', setCompletePreview, 350, () => needsCompletePreview)
     return () => { controller.abort(); timers.forEach(timer => window.clearTimeout(timer)) }
   }, [token])
 
   const visualFrame = phone && phoneStream && phoneVisuals?.stream === phoneStream ? phoneVisuals.frame : undefined
-  const finishedPreview = visualFrame?.modelPreview?.partial && completePreview?.stream === phoneStream
+  const latestPreview = visualFrame?.modelPreview
+  const finishedPreview = latestPreview && completePreview?.stream === phoneStream
     ? completePreview?.preview : undefined
   const frame = token ? phone && visualFrame ? {
     ...phone, modelPreview: visualFrame.modelPreview,
@@ -123,7 +157,10 @@ function Dashboard() {
       smoothedDepthPreview: visualFrame.observation.smoothedDepthPreview, hazards: visualFrame.observation.hazards,
     },
   } : phone : simulation
-  const overlayPreview = finishedPreview ?? frame?.modelPreview
+  const latestHasScan = !!(latestPreview?.denseScan || latestPreview?.scan)
+  const finishedHasScan = !!(finishedPreview?.denseScan || finishedPreview?.scan)
+  const overlayPreview = finishedHasScan && (!latestHasScan || latestPreview?.partial)
+    ? finishedPreview : frame?.modelPreview
   const cueLabel = frame?.modelWarning ? HAZARD_LABELS[frame.modelWarning] : frame ? cueLabels[frame.command.cue] : undefined
   const eventText = frame ? `${cueLabel} · ${frame.belt.connected ? 'belt online' : 'belt offline'}` : null
   const eventTime = frame?.observation.timeMs
