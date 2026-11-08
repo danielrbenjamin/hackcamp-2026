@@ -1,7 +1,11 @@
 import { useRef, useState, type DragEvent, type ReactNode } from 'react'
 
-const views = { cloud: '3D scan', grid: 'Occupancy grid', depth: 'Depth & confidence', models: 'Model preview' } as const
+const views = {
+  cloud: '3D scan', grid: 'Occupancy grid', depth: 'Depth & confidence',
+  combined: 'Combined overlay', separate: 'Individual models', scan: '3D scan overlay',
+} as const
 export type EditorView = keyof typeof views
+const extraViews = new Set<EditorView>(['grid', 'depth', 'combined'])
 type Group = { tabs: EditorView[]; active: EditorView }
 type Edge = 'left' | 'right' | 'top' | 'bottom'
 type Layout = { groups: Group[]; axis: 'horizontal' | 'vertical' }
@@ -16,6 +20,7 @@ export function EditorWorkspace({ layout, setLayout, renderView }: {
   const [dragged, setDragged] = useState<EditorView>()
   const [target, setTarget] = useState<Edge | number>()
   const [ratio, setRatio] = useState(50)
+  const [openedExtras, setOpenedExtras] = useState<EditorView[]>([])
   const workspace = useRef<HTMLDivElement>(null)
   const { groups, axis } = layout
   const split = groups.length === 2
@@ -26,10 +31,10 @@ export function EditorWorkspace({ layout, setLayout, renderView }: {
   }
 
   function splitView(view: EditorView, edge: Edge) {
-    const remaining = groups[0].tabs.filter(tab => tab !== view)
+    const remaining = groups[0].tabs.filter(tab => tab !== view && !extraViews.has(tab))
     if (!remaining.length) return
     const other = { tabs: remaining, active: remaining.includes(groups[0].active) ? groups[0].active : remaining[0] }
-    const next = { tabs: [view], active: view }
+    const next = { tabs: [view, ...groups[0].tabs.filter(tab => tab !== view && extraViews.has(tab))], active: view }
     setRatio(50)
     setLayout({
       groups: edge === 'left' || edge === 'top' ? [next, other] : [other, next],
@@ -44,6 +49,29 @@ export function EditorWorkspace({ layout, setLayout, renderView }: {
       const tabs = group.tabs.filter(tab => tab !== view)
       return { tabs, active: group.active === view ? tabs[0] : group.active }
     }).filter(group => group.tabs.length) })
+  }
+
+  function selectView(view: EditorView, index: number) {
+    const openingExtra = extraViews.has(view) && !openedExtras.includes(view)
+    if (openingExtra) setOpenedExtras(current => [...current, view])
+    setLayout({ ...layout, groups: groups.map((pane, position) =>
+      position === index ? {
+        tabs: openingExtra ? [...pane.tabs.filter(tab => tab !== view), view] : pane.tabs,
+        active: view,
+      } : pane) })
+  }
+
+  function closeExtra(view: EditorView, index: number) {
+    setOpenedExtras(current => current.filter(tab => tab !== view))
+    const group = groups[index]
+    if (group.active !== view) return
+    const next = group.tabs.find(tab => tab !== view && (!extraViews.has(tab) || openedExtras.includes(tab)))
+    if (next) {
+      selectView(next, index)
+    } else if (split) {
+      const other = groups[1 - index]
+      setLayout({ ...layout, groups: [{ tabs: [...other.tabs, ...group.tabs], active: other.active }] })
+    }
   }
 
   function accept(event: DragEvent, destination: Edge | number) {
@@ -72,15 +100,25 @@ export function EditorWorkspace({ layout, setLayout, renderView }: {
         onDragOver={split ? event => accept(event, index) : undefined}
         onDrop={split ? event => drop(event, index) : undefined}>
         <div className="editor-tabs" role="group" aria-label="Views">
-          {group.tabs.map(view => <button key={view} draggable data-dragging={dragged === view}
-            aria-pressed={group.active === view} onClick={() => setLayout({ ...layout, groups: groups.map((pane, position) =>
-              position === index ? { ...pane, active: view } : pane) })}
+          {group.tabs.filter(view => !extraViews.has(view) || openedExtras.includes(view) || group.active === view)
+            .map(view => <div className="editor-tab" key={view}><button draggable data-dragging={dragged === view}
+            aria-pressed={group.active === view} onClick={() => selectView(view, index)}
             onDragStart={event => {
               event.dataTransfer.setData(mime, view)
               event.dataTransfer.effectAllowed = 'move'
               setDragged(view)
-            }} onDragEnd={finishDrag}>{views[view]}</button>)}
+            }} onDragEnd={finishDrag}>{views[view]}</button>
+              {extraViews.has(view) && <button className="editor-tab-close" aria-label={`Close ${views[view]}`}
+                title={`Close ${views[view]}`} onClick={() => closeExtra(view, index)}>×</button>}
+            </div>)}
         </div>
+        {group.tabs.some(view => extraViews.has(view) && !openedExtras.includes(view) && group.active !== view) &&
+        <select className="editor-extra-views" aria-label="More views"
+          value="" onChange={event => selectView(event.target.value as EditorView, index)}>
+          <option value="" disabled>More</option>
+          {group.tabs.filter(view => extraViews.has(view) && !openedExtras.includes(view) && group.active !== view)
+            .map(view => <option key={view} value={view}>{views[view]}</option>)}
+        </select>}
         <div className="editor-actions">
           {split ? <button title="Merge editor panes" aria-label={`Merge editor pane ${index + 1}`}
             onClick={() => setLayout({ ...layout, groups: [{ tabs: groups.flatMap(pane => pane.tabs), active: groups[1 - index].active }] })}>×</button>
@@ -119,4 +157,4 @@ export function EditorWorkspace({ layout, setLayout, renderView }: {
   </div>
 }
 
-export const initialLayout: Layout = { groups: [{ tabs: ['cloud', 'grid', 'depth', 'models'], active: 'cloud' }], axis: 'horizontal' }
+export const initialLayout: Layout = { groups: [{ tabs: ['cloud', 'grid', 'depth', 'combined', 'separate', 'scan'], active: 'cloud' }], axis: 'horizontal' }

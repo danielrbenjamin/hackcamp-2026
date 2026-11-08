@@ -45,7 +45,6 @@ export default function App() {
   const [voiceStatus, setVoiceStatus] = useState('')
   const [voiceListening, setVoiceListening] = useState(false)
   const voicePending = useRef(false)
-  const scrollView = useRef<ComponentRef<typeof ScrollView>>(null)
   const screenHeading = useRef<ComponentRef<typeof Text>>(null)
   const previousScreen = useRef(screen)
   const [status, setStatus] = useState<DepthStatus>(native ? 'starting' : 'idle')
@@ -89,7 +88,6 @@ export default function App() {
     if (previousScreen.current === screen) return
     if (previousScreen.current === 'route') Keyboard.dismiss()
     previousScreen.current = screen
-    scrollView.current?.scrollTo({ y: 0, animated: false })
     const frame = requestAnimationFrame(() => {
       if (screenHeading.current) AccessibilityInfo.sendAccessibilityEvent(screenHeading.current, 'focus')
     })
@@ -440,26 +438,24 @@ export default function App() {
   const manualRoute = screen === 'route'
   const routeOpen = manualRoute || voiceRoute
   const homeLayout = screen === 'home' || voiceRoute
+  const settingsLayout = screen === 'settings'
   const compactHome = width < 360 || height < 680
 
   return (
-    <SafeAreaView style={[styles.page, homeLayout && { backgroundColor: homeColor }]}>
-    <ScrollView ref={scrollView} style={styles.scroll}
-      contentContainerStyle={[styles.content, homeLayout && styles.homeContent]}
-      contentInsetAdjustmentBehavior="never" scrollEnabled={!homeLayout} bounces={!homeLayout}
-      keyboardDismissMode="on-drag" keyboardShouldPersistTaps="handled">
-      <StatusBar barStyle={homeLayout && homeColor === palette.yellow ? 'dark-content' : 'light-content'} />
-      {!homeLayout && <View style={styles.settings}>
-        <Control label={manualRoute ? 'Back to Advanced' : screen === 'advanced' ? 'Back to Settings' : 'Back to Home'}
-          onPress={() => setScreen(manualRoute ? 'advanced' : screen === 'advanced' ? 'settings' : 'home')} />
+    <SafeAreaView style={[styles.page, homeLayout && { backgroundColor: homeColor }, settingsLayout && { backgroundColor: palette.blue }]}>
+    <StatusBar barStyle={homeLayout && homeColor === palette.yellow ? 'dark-content' : 'light-content'} />
+    <View style={[styles.content, styles.fixedContent, (homeLayout || settingsLayout) && styles.homeContent,
+      screen === 'advanced' && styles.hidden]}>
+      {manualRoute && <View style={styles.settings}>
+        <Control label="Back to Advanced" onPress={() => setScreen('advanced')} />
         <Text ref={screenHeading} accessible accessibilityRole="header" style={styles.kicker}>
-          {manualRoute ? 'Enter destination' : screen === 'settings' ? 'Settings' : 'Advanced'}
+          Enter destination
         </Text>
       </View>}
       {homeLayout && <HomeButton label={native ? beltEnabled ? 'Disconnect Belt' : 'Connect Belt' : connected ? 'Disconnect Belt' : 'Connect Belt'}
         onPress={toggleBelt} compact={compactHome} />}
       <View style={homeLayout ? styles.homeReadout
-        : manualRoute ? styles.panel : styles.hidden}>
+        : manualRoute ? [styles.panel, styles.fixedContent] : styles.hidden}>
           {homeLayout && <Text ref={voiceRoute ? undefined : screenHeading} accessible accessibilityRole="header"
             adjustsFontSizeToFit numberOfLines={3}
             style={[styles.homeStatus, compactHome && styles.homeStatusCompact, voiceRoute && styles.routeStatus, { color: homeInk }]}>{homeStatus}</Text>}
@@ -482,7 +478,8 @@ export default function App() {
               </Text>
             </Pressable>
           </View>}
-          <ScrollView style={voiceRoute ? styles.routeEditor : manualRoute ? undefined : styles.hidden} nestedScrollEnabled
+          <ScrollView style={voiceRoute ? styles.routeEditor : manualRoute ? styles.scroll : styles.hidden}
+            automaticallyAdjustKeyboardInsets={manualRoute} keyboardDismissMode="on-drag"
             keyboardShouldPersistTaps="handled" contentContainerStyle={styles.routeEditorContent}>
             {voiceRoute && <Text ref={screenHeading} accessible accessibilityRole="header" style={styles.routeHeading}>Spoken destination</Text>}
             {native && <GoogleRoute onRoute={onRoute} visible={routeOpen} voiceOnly={voiceRoute} endRequest={endRequest}
@@ -495,12 +492,23 @@ export default function App() {
           ? nativeDepth?.listenForDestination ? 'Wait for the vibration, then say a place or address.' : 'Hear how to set a destination with Siri.'
           : undefined}
         onPress={routeAction} compact={compactHome} />}
-      {screen === 'settings' && <Control label="Advanced" onPress={() => setScreen('advanced')} />}
-      {screen === 'advanced' && <>
+      {settingsLayout && <>
+        <HomeButton label="Back to Home" onPress={() => setScreen('home')} compact={compactHome} />
+        <View style={styles.homeReadout}>
+          <Text ref={screenHeading} accessible accessibilityRole="header" adjustsFontSizeToFit numberOfLines={2}
+            style={[styles.homeStatus, compactHome && styles.homeStatusCompact, styles.settingsHeading]}>Settings</Text>
+        </View>
+        <HomeButton label="Advanced" onPress={() => setScreen('advanced')} compact={compactHome} />
+      </>}
+    </View>
+    {screen === 'advanced' && <ScrollView style={styles.scroll} contentContainerStyle={styles.content}
+      contentInsetAdjustmentBehavior="never" keyboardDismissMode="on-drag" keyboardShouldPersistTaps="handled"
+      automaticallyAdjustKeyboardInsets>
       <View style={styles.banner}>
-        <Text accessible accessibilityRole="header" accessibilityLabel="Lantern"
+        <Text ref={screenHeading} accessible accessibilityRole="header" accessibilityLabel="Lantern"
           allowFontScaling={false} style={styles.wordmark}>{LANTERN_BANNER}</Text>
       </View>
+      <Control label="Back to Home" onPress={() => setScreen('home')} />
       {native && <View style={styles.panel}>
         <Text accessibilityRole="header" style={styles.kicker}>Belt</Text>
         <Text style={styles.status}>{beltStatus}{frame?.belt.battery != null ? ` · ${frame.belt.battery}% battery` : ''}</Text>
@@ -607,8 +615,7 @@ export default function App() {
         }} />
       </View>}
       {native && <Control label="Switch to simulation" onPress={() => setSensorMode(false)} />}
-      </>}
-    </ScrollView>
+    </ScrollView>}
     </SafeAreaView>
   )
 }
@@ -624,6 +631,7 @@ function HomeButton({ label, hint, onPress, compact }: { label: string; hint?: s
 const styles = StyleSheet.create({
   page: { flex: 1, backgroundColor: terminal.background },
   scroll: { flex: 1 },
+  fixedContent: { flex: 1, minHeight: 0 },
   content: { padding: 20, paddingTop: Platform.OS === 'web' ? 28 : 16, paddingBottom: 32, gap: 16,
     width: '100%', maxWidth: 560, alignSelf: 'center' },
   kicker: { color: terminal.text, fontSize: 24, fontWeight: '700' },
@@ -643,6 +651,7 @@ const styles = StyleSheet.create({
   homeSettings: { alignItems: 'center' },
   settingsButton: { minHeight: 44, justifyContent: 'center', paddingHorizontal: 10 },
   settingsText: { fontSize: 18, fontWeight: '700' },
+  settingsHeading: { color: '#fff' },
   homeButton: { height: '26%', minHeight: 56, backgroundColor: palette.cream, borderWidth: 3,
     borderColor: '#000', borderRadius: 28, justifyContent: 'center', padding: 10 },
   homeButtonPressed: { opacity: 0.82 },

@@ -60,7 +60,7 @@ Google computes the walking route. Lantern tests nine local corridors from −60
 
 The three selected packages, `GlassSegmentation.mlpackage`, `StairSegmentation.mlpackage`, and `PersonDetection.mlpackage`, belong in `modules/navigation-depth/ios/Models/` and can be tracked by Git. If the iOS project already exists, run `pod install` from root `ios/` to update its model resources, then run `npm run ios` from the repo root.
 
-Hazard models start in iPhone LiDAR mode. **Preview hazard models** under **Settings → Advanced** controls the diagnostic preview and its sharing. With dashboard and 3D scan sharing enabled, select **Model preview** to see the masks, person boxes, and 3D detections.
+Hazard models start in iPhone LiDAR mode. **Preview hazard models** under **Settings → Advanced** controls the diagnostic preview and its sharing. With dashboard and 3D scan sharing enabled, use the **Combined overlay**, **Individual models**, or **3D scan overlay** tab.
 
 Fresh model hazards can block a local direction and trigger the belt obstacle pattern when they overlap the forward corridor. Stairs require depth-supported mask points. People use measured positions and a short crossing forecast. Glass uses its image bearing with distance unknown. The phone discards old results and clears them when tracking resets. The independent raw LiDAR warning has priority and continues if models are unavailable. Check the model warning transitions and false alerts on a stationary iPhone before walking with the belt.
 
@@ -68,7 +68,7 @@ Fresh model hazards can block a local direction and trigger the belt obstacle pa
 
 Glass uses the supplied ImageNet and valid-depth p99 transform. The stair preview preserves camera aspect ratio with zero padding, then uses 384 × 384 bilinear sampling, ImageNet RGB normalization, and valid-depth p1/p99 clipping followed by `(depth - 0.5) / 0.25` after scaling depth to 0–1. Sampled training images confirm that larger encoded values represent farther surfaces, as with iPhone depth in metres. A depth return within a glass mask may belong to the background. Pedestrian trajectories use short-range nearest-neighbor association in ARKit world coordinates and a 0.6-second constant-velocity prediction. Verify model alignment, false detections, and latency on a stationary iPhone before any navigation integration.
 
-In **Model preview → 3D scan overlay**, solid green trails show up to eight recent measured person positions. Dashed orange trails show predictions at +200, +400 and +600 ms. Front projects trails into the matching camera frame, and Orbit shows them in 3D. Tracks can survive a brief missed detection and reset when ARKit loses tracking. Check that a stationary person's trail stays in place while moving the phone, then check a walking person and a tracking interruption.
+In **3D scan overlay**, solid green trails show up to eight recent measured person positions. Dashed orange trails show predictions at +200, +400 and +600 ms. Front projects trails into the matching camera frame, and Orbit shows them in 3D. Tracks can survive a brief missed detection and reset when ARKit loses tracking. Check that a stationary person's trail stays in place while moving the phone, then check a walking person and a tracking interruption.
 
 ### Earlier traversability experiment
 

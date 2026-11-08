@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useId, useMemo, useRef, useState, type PointerEvent, type ReactNode } from 'react'
 import { HAZARD_LABELS, type DenseScan, type DepthPoint, type Grid, type Hazard, type Heading, type ModelPreview } from '../shared/contracts'
 import { CloudCanvas } from './CloudCanvas'
 import { decodeDenseScan, fillScanGaps, scanImagePoint, SCAN_HISTORY_MS, type ScanFrame } from './denseScan'
@@ -6,6 +6,8 @@ import { modelPointColors } from './modelColors'
 
 const colors = ['#49608b', '#59a8b2', '#a1b979', '#e9ae6b']
 const heightRgb = colors.map(color => parseInt(color.slice(1), 16))
+const orbitHome = { yaw: -27, tilt: 36, zoom: 1, x: 0, y: 0 }
+const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value))
 
 function cameraColor(rgb: number): string {
   const channel = (shift: number) => Math.round(((rgb >> shift) & 7) * 255 / 7)
@@ -59,11 +61,13 @@ export function PointCloud({ points, pointColors, heading, hazards, phone, color
   fillRecent?: boolean
   modelMasks?: ModelPreview['masks']
 }) {
-  const [yaw, setYaw] = useState(-27)
+  const [camera, setCamera] = useState(orbitHome)
   const trailClip = useId()
-  const [tilt, setTilt] = useState(36)
   const [angled, setAngled] = useState(false)
   const [zoom, setZoom] = useState(1)
+  const [panMode, setPanMode] = useState(false)
+  const [dragging, setDragging] = useState(false)
+  const drag = useRef<{ id: number; x: number; y: number; pan: boolean } | null>(null)
   const [fallback, setFallback] = useState(false)
   const scan = useRef<HTMLDivElement>(null)
   const [frameWidth, setFrameWidth] = useState(720)
@@ -86,6 +90,48 @@ export function PointCloud({ points, pointColors, heading, hazards, phone, color
     })
   }, [pointColors])
   const orbit = angled
+  useEffect(() => {
+    const element = scan.current
+    if (!orbit || !element) return
+    function wheel(event: WheelEvent) {
+      event.preventDefault()
+      const delta = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? 100 : 1)
+      setCamera(current => ({ ...current, zoom: clamp(current.zoom * Math.exp(-delta * 0.0018), 0.25, 6) }))
+    }
+    element.addEventListener('wheel', wheel, { passive: false })
+    return () => element.removeEventListener('wheel', wheel)
+  }, [orbit])
+
+  function moveCamera(dx: number, dy: number, pan: boolean, height: number) {
+    setCamera(current => pan
+      ? { ...current, x: current.x + dx * 420 / height, y: current.y + dy * 420 / height }
+      : { ...current, yaw: ((current.yaw + dx * 0.4 + 180) % 360 + 360) % 360 - 180,
+        tilt: clamp(current.tilt + dy * 0.4, -89, 89) })
+  }
+
+  function startDrag(event: PointerEvent<HTMLDivElement>) {
+    if (!orbit || drag.current || ![0, 1, 2].includes(event.button)) return
+    event.preventDefault()
+    event.currentTarget.focus({ preventScroll: true })
+    event.currentTarget.setPointerCapture(event.pointerId)
+    drag.current = { id: event.pointerId, x: event.clientX, y: event.clientY, pan: panMode || event.shiftKey || event.button !== 0 }
+    setDragging(true)
+  }
+
+  function moveDrag(event: PointerEvent<HTMLDivElement>) {
+    const previous = drag.current
+    if (previous?.id !== event.pointerId) return
+    const dx = event.clientX - previous.x
+    moveCamera(previous.pan ? dx : -dx, event.clientY - previous.y, previous.pan, Math.max(1, event.currentTarget.clientHeight))
+    previous.x = event.clientX
+    previous.y = event.clientY
+  }
+
+  function stopDrag(event: PointerEvent<HTMLDivElement>) {
+    if (drag.current?.id !== event.pointerId) return
+    drag.current = null
+    setDragging(false)
+  }
   const imageCoordinates = useMemo(() => cameraOverlay?.coordinates ? atob(cameraOverlay.coordinates) : '', [cameraOverlay?.coordinates])
   const [gapFill, setGapFill] = useState(true)
   const [history, setHistory] = useState<ScanFrame[]>([])
@@ -111,7 +157,7 @@ export function PointCloud({ points, pointColors, heading, hazards, phone, color
   const visiblePoints = dense?.points ?? points
   const showCameraOverlay = !orbit && (!!dense || !!imageCoordinates)
   const hasCameraColor = dense ? !!dense.colors.length : !!rgb?.length
-  const scale = 58 * zoom * (phone ? 1.6 : 1)
+  const scale = 58 * camera.zoom * (phone ? 1.6 : 1)
   const centerDepth = phone ? 1.75 : 2.5
   const bounds = useMemo(() => frontBounds(dense ? undefined : points), [dense, points])
   const frontScale = zoom * Math.min(frameWidth * 0.94 / Math.max(0.15, bounds.right - bounds.left),
@@ -125,8 +171,8 @@ export function PointCloud({ points, pointColors, heading, hazards, phone, color
   const imageHeight = imageWidth / aspect
   const imageX = (frameWidth - imageWidth) / 2
   const imageY = (420 - imageHeight) / 2
-  const angle = (orbit ? yaw : 0) * Math.PI / 180
-  const pitch = (orbit ? tilt : 0) * Math.PI / 180
+  const angle = camera.yaw * Math.PI / 180
+  const pitch = camera.tilt * Math.PI / 180
   const sin = Math.sin(angle)
   const cos = Math.cos(angle)
   const pitchSin = Math.sin(pitch)
@@ -137,8 +183,8 @@ export function PointCloud({ points, pointColors, heading, hazards, phone, color
       return [centerX + (right / z - frontX) * frontScale, 210 - (up / z - frontY) * frontScale, forward]
     }
     const depth = (forward - centerDepth) * cos - right * sin
-    return [centerX + (right * cos + (forward - centerDepth) * sin) * scale,
-      210 - (up * pitchCos + depth * pitchSin) * scale, depth * pitchCos - up * pitchSin]
+    return [centerX + camera.x + (right * cos + (forward - centerDepth) * sin) * scale,
+      210 + camera.y - (up * pitchCos + depth * pitchSin) * scale, depth * pitchCos - up * pitchSin]
   }
   const project = (point: DepthPoint) => projectPoint(point).slice(0, 2)
   const grid = Array.from({ length: 11 }, (_, i) => {
@@ -188,7 +234,19 @@ export function PointCloud({ points, pointColors, heading, hazards, phone, color
     { label: 'Z', end: project([0, -1.2, 0.65]), color: '#9dd9e8' },
   ]
   return <>
-    <div className="scan" ref={scan}>
+    <div className="scan" ref={scan} data-orbit={orbit} data-dragging={dragging}
+      tabIndex={orbit ? 0 : undefined}
+      aria-label={orbit ? 'Orbit viewport. Arrow keys rotate, Shift plus arrow keys pan.' : undefined}
+      onPointerDown={startDrag} onPointerMove={moveDrag} onLostPointerCapture={stopDrag}
+      onContextMenu={orbit ? event => event.preventDefault() : undefined}
+      onKeyDown={event => {
+        if (!orbit) return
+        const dx = event.key === 'ArrowLeft' ? -16 : event.key === 'ArrowRight' ? 16 : 0
+        const dy = event.key === 'ArrowUp' ? -16 : event.key === 'ArrowDown' ? 16 : 0
+        if (!dx && !dy) return
+        event.preventDefault()
+        moveCamera(dx, dy, event.shiftKey, Math.max(1, event.currentTarget.clientHeight))
+      }}>
       {orbit && <svg viewBox={viewBox} className="cloud" aria-hidden="true">
         <path d={grid} fill="none" stroke="#293039" />
       </svg>}
@@ -268,13 +326,22 @@ export function PointCloud({ points, pointColors, heading, hazards, phone, color
         <button aria-pressed={angled} onClick={() => setAngled(true)}>Orbit</button>
         {fillRecent && denseScan?.tracking && <button aria-pressed={gapFill} onClick={() => setGapFill(value => !value)}>Fill gaps</button>}
       </div>
-      <label className="orbit">Zoom <input type="range" min="0.6" max="2.5" step="0.05" value={zoom}
-        onChange={event => setZoom(Number(event.target.value))} /></label>
+      <label className="orbit">Zoom <input type="range" min={orbit ? 0.25 : 0.6} max={orbit ? 6 : 2.5} step="0.05" value={orbit ? camera.zoom : zoom}
+        onChange={event => {
+          const zoom = Number(event.target.value)
+          if (orbit) setCamera(current => ({ ...current, zoom }))
+          else setZoom(zoom)
+        }} /></label>
       {orbit && <>
-        <label className="orbit">Rotate <input type="range" min="-180" max="180" value={yaw}
-          onChange={event => setYaw(Number(event.target.value))} /></label>
-        <label className="orbit">Tilt <input type="range" min="0" max="80" value={tilt}
-          onChange={event => setTilt(Number(event.target.value))} /></label>
+        <label className="orbit">Rotate <input type="range" min="-180" max="180" value={camera.yaw}
+          onChange={event => { const yaw = Number(event.target.value); setCamera(current => ({ ...current, yaw })) }} /></label>
+        <label className="orbit">Tilt <input type="range" min="-89" max="89" value={camera.tilt}
+          onChange={event => { const tilt = Number(event.target.value); setCamera(current => ({ ...current, tilt })) }} /></label>
+        <div className="scan-modes">
+          <button aria-pressed={panMode} title="Drag to pan. You can also Shift-drag or use the middle mouse button."
+            onClick={() => setPanMode(value => !value)}>Pan</button>
+          <button onClick={() => { setCamera(orbitHome); setPanMode(false) }}>Reset view</button>
+        </div>
       </>}
     </div>
   </>

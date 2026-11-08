@@ -1,14 +1,20 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import type { ModelPreview as Preview } from '../shared/contracts'
 import { PointCloud } from './PointCloud'
 import { glassBearing } from './modelColors'
+import { distancePalette } from './DepthImages'
 
 const glass = [84, 203, 237]
 const riser = [248, 166, 96]
 const tread = [251, 215, 123]
 const personColor = 'var(--model-person)'
+const depthColors = distancePalette(300)
+const mutedDepthColors = depthColors.map((_, cm) => {
+  const light = cm > 0 ? 0.2 + 0.8 * Math.max(0, 1 - cm / 300) : 0
+  return [10 + light * 47, 16 + light * 77, 24 + light * 99, 255]
+})
 
-function SceneImage({ depth }: { depth: NonNullable<Preview['depthPreview']> }) {
+function SceneImage({ depth, muted }: { depth: NonNullable<Preview['depthPreview']>; muted: boolean }) {
   const canvas = useRef<HTMLCanvasElement>(null)
   const { width, height } = depth
   useEffect(() => {
@@ -16,16 +22,13 @@ function SceneImage({ depth }: { depth: NonNullable<Preview['depthPreview']> }) 
     if (!context) return
     const pixels = context.createImageData(width, height)
     const samples = atob(depth.samples)
+    const colors = muted ? mutedDepthColors : depthColors
     for (let i = 0; i < width * height; i++) {
       const cm = (samples.charCodeAt(i * 2) | (samples.charCodeAt(i * 2 + 1) << 8)) & 0x3fff
-      const light = cm > 0 ? 0.2 + 0.8 * Math.max(0, 1 - cm / 300) : 0
-      pixels.data[i * 4] = 10 + light * 47
-      pixels.data[i * 4 + 1] = 16 + light * 77
-      pixels.data[i * 4 + 2] = 24 + light * 99
-      pixels.data[i * 4 + 3] = 255
+      pixels.data.set(colors[Math.min(cm, 500)], i * 4)
     }
     context.putImageData(pixels, 0, 0)
-  }, [depth, width, height])
+  }, [depth, width, height, muted])
   return <canvas ref={canvas} width={width} height={height} role="img" aria-label="Depth image from the model frame" />
 }
 
@@ -92,8 +95,12 @@ function ModelKey({ kind }: { kind?: 'glass' | 'stairs' | 'person' }) {
   </div>
 }
 
-export function ModelPreview({ preview }: { preview?: Preview }) {
-  const [view, setView] = useState<'separate' | 'combined' | 'scan'>('combined')
+export function ModelPreview({ preview, view, mutedDepth, setMutedDepth }: {
+  preview?: Preview
+  view: 'separate' | 'combined' | 'scan'
+  mutedDepth: boolean
+  setMutedDepth: (value: boolean) => void
+}) {
   const overlays = useMemo(() => preview?.masks.flatMap(mask => {
       const [red, green, blue] = mask.kind === 'glass' ? glass : riser
       return mask.points.map(point => ({ point, rgb: (red << 16) | (green << 8) | blue }))
@@ -109,11 +116,10 @@ export function ModelPreview({ preview }: { preview?: Preview }) {
   const unlocated = preview.people.filter(person => !person.position || person.position[2] < 0.08).length
   return <>
     <div className="model-preview-toolbar">
-      <div className="scan-modes" role="group" aria-label="Model preview view">
-        <button aria-pressed={view === 'combined'} onClick={() => setView('combined')}>Combined overlay</button>
-        <button aria-pressed={view === 'separate'} onClick={() => setView('separate')}>Individual models</button>
-        <button aria-pressed={view === 'scan'} onClick={() => setView('scan')}>3D scan overlay</button>
-      </div>
+      {view !== 'scan' && depth && <div className="scan-modes" role="group" aria-label="Depth palette">
+        <button aria-pressed={!mutedDepth} onClick={() => setMutedDepth(false)}>Color</button>
+        <button aria-pressed={mutedDepth} onClick={() => setMutedDepth(true)}>Muted blue</button>
+      </div>}
       <span className="model-latency">{Math.round(preview.latencyMs)} ms{preview.partial ? ' · Partial results' : ''}</span>
     </div>
     {bearing && <div className="legend">
@@ -144,7 +150,7 @@ export function ModelPreview({ preview }: { preview?: Preview }) {
       <figure>
         <figcaption>{depth ? 'Depth with detections' : 'Detections'}<span>{preview.people.length} {preview.people.length === 1 ? 'person' : 'people'}</span></figcaption>
         <div className="model-scene" style={{ aspectRatio: width / height }}>
-          {depth && <SceneImage depth={depth} />}
+          {depth && <SceneImage depth={depth} muted={mutedDepth} />}
           <svg viewBox="0 0 96 96" preserveAspectRatio="none" role="img" aria-label="Glass and stair segmentation masks"><ScanMasks masks={preview.masks} /></svg>
           <PersonBoxes people={preview.people} width={width} height={height} />
         </div>
@@ -157,7 +163,7 @@ export function ModelPreview({ preview }: { preview?: Preview }) {
         return <figure key={kind}>
           <figcaption>{kind === 'glass' ? 'Glass' : 'Stairs'}<span>{mask ? hasDetection ? 'Detected' : 'No detection' : 'No mask'}</span></figcaption>
           <div className="model-scene" style={{ aspectRatio: width / height }}>
-            {depth && <SceneImage depth={depth} />}
+            {depth && <SceneImage depth={depth} muted={mutedDepth} />}
             {mask && <svg viewBox="0 0 96 96" preserveAspectRatio="none" role="img" aria-label={`${kind} segmentation mask`}><ScanMasks masks={[mask]} /></svg>}
           </div>
           <span>{preview.models[kind]}</span>
@@ -167,7 +173,7 @@ export function ModelPreview({ preview }: { preview?: Preview }) {
       <figure>
         <figcaption>People<span>{preview.people.length} detected</span></figcaption>
         <div className="model-scene" style={{ aspectRatio: width / height }}>
-        {depth && <SceneImage depth={depth} />}
+        {depth && <SceneImage depth={depth} muted={mutedDepth} />}
         <PersonBoxes people={preview.people} width={width} height={height} />
         </div>
         <span>{preview.models.person}</span>

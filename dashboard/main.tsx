@@ -7,6 +7,7 @@ import { LANTERN_BANNER } from '../shared/lantern'
 import { PointCloud, simulatedPoints } from './PointCloud'
 import { DepthImages } from './DepthImages'
 import { ModelPreview } from './ModelPreview'
+import { plottedZones, RangePlot } from './RangePlot'
 import { EditorWorkspace, initialLayout, type EditorView } from './EditorWorkspace'
 import './style.css'
 
@@ -20,14 +21,17 @@ function Dashboard() {
   const [connected, setConnected] = useState(true)
   const [simulation, setSimulation] = useState<Telemetry>()
   const [phone, setPhone] = useState<Telemetry>()
+  const [phoneReceivedAt, setPhoneReceivedAt] = useState<number>()
   const [tokenInput, setTokenInput] = useState('')
   const [token, setToken] = useState('')
   const [link, setLink] = useState('')
   const [layout, setLayout] = useState(initialLayout)
+  const [mutedDepth, setMutedDepth] = useState(false)
   const [evaluation, setEvaluation] = useState<Evaluation>()
   const [evaluationError, setEvaluationError] = useState('')
   const [events, setEvents] = useState<{ time: number; text: string }[]>([])
   const [terminal, setTerminal] = useState(true)
+  const [lowerView, setLowerView] = useState<'plot' | 'terminal'>('plot')
   const [sidePane, setSidePane] = useState<'explorer' | 'inspector' | null>(null)
   const [inspection, setInspection] = useState<'guidance' | 'model' | 'belt'>('guidance')
   const [commandInput, setCommandInput] = useState('')
@@ -37,7 +41,7 @@ function Dashboard() {
   useEffect(() => {
     const output = terminalOutput.current
     if (output) output.scrollTop = output.scrollHeight
-  }, [events, history, terminal])
+  }, [events, history, terminal, lowerView])
 
   useEffect(() => {
     const loop = createLoop(mock.providers)
@@ -58,6 +62,7 @@ function Dashboard() {
         if (!response.ok) throw new Error(`Relay returned ${response.status}`)
         const data = await response.json() as { receivedAt: number; frame: Telemetry } | null
         if (controller.signal.aborted) return
+        if (data) setPhoneReceivedAt(data.receivedAt)
         const fresh = data && Date.now() - data.receivedAt < 2_000
         setPhone(fresh ? data.frame : undefined)
         setLink(fresh ? 'Receiving phone telemetry' : 'Waiting for phone telemetry')
@@ -84,6 +89,7 @@ function Dashboard() {
   const controls = <form className="link-form" onSubmit={event => {
     event.preventDefault()
     setPhone(undefined)
+    setPhoneReceivedAt(undefined)
     setEvents([])
     setLink(token ? '' : 'Connecting…')
     setToken(token ? '' : tokenInput.trim())
@@ -104,6 +110,13 @@ function Dashboard() {
   const belt = frame?.belt
   const command = frame?.command
   const reflex = frame?.reflex
+  const zonesWithDepth = observation && plottedZones.filter(zone => {
+    const value = observation.zones[zone]
+    return value !== null && Number.isFinite(value) && value > 0
+  }).length
+  const lastFrameAt = token ? phoneReceivedAt : observation?.timeMs
+  const sensorStatus = !observation ? lastFrameAt ? 'Feed interrupted' : 'Waiting for feed'
+    : !zonesWithDepth ? 'Depth unavailable' : reflex === 'unknown' ? 'Limited depth' : 'Receiving depth'
   const radians = (heading ?? 0) * Math.PI / 180
   const source = token ? observation?.source === 'arkit' ? 'iPhone LiDAR' : observation ? 'Phone simulation' : 'iPhone' : 'Simulation'
 
@@ -133,8 +146,7 @@ function Dashboard() {
       <div className="workarea">
         <nav className="activity" aria-label="Workspace panes">
           <button title="3D scan" aria-label="Open 3D scan" aria-pressed={layout.groups.some(group => group.active === 'cloud')} onClick={() => openView('cloud')}>[+]</button>
-          <button title="Occupancy grid" aria-label="Open occupancy grid" aria-pressed={layout.groups.some(group => group.active === 'grid')} onClick={() => openView('grid')}>[#]</button>
-          <button title="Terminal" aria-label="Toggle terminal" aria-pressed={terminal} onClick={() => setTerminal(!terminal)}>&gt;_</button>
+          <button title="Plotter and terminal" aria-label="Toggle plotter and terminal" aria-pressed={terminal} onClick={() => setTerminal(!terminal)}>&gt;_</button>
           <button className="pane-toggle" title="Explorer" aria-label="Toggle Explorer" aria-controls="explorer"
             aria-expanded={sidePane === 'explorer'} onClick={() => setSidePane(sidePane === 'explorer' ? null : 'explorer')}>[=]</button>
           <button className="pane-toggle" title="Inspector" aria-label="Toggle Inspector" aria-controls="inspector"
@@ -160,15 +172,18 @@ function Dashboard() {
             </button>
           </section>}
           <section className="side-section">
-            <h3>Range returns</h3>
+            <h3>Sensor status</h3>
             <dl className="readouts">
-              {ZONE_NAMES.map((name, i) => <div key={name}><dt>{name}</dt><dd>{observation?.zones[i]?.toFixed(2) ?? '—'} <small>m</small></dd></div>)}
+              <div><dt>Depth</dt><dd>{sensorStatus}</dd></div>
+              <div><dt>Zones with depth</dt><dd>{zonesWithDepth === undefined ? '—' : `${zonesWithDepth} / ${plottedZones.length}`}</dd></div>
+              <div><dt>Last frame</dt><dd>{lastFrameAt ? new Date(lastFrameAt).toLocaleTimeString('en-GB') : '—'}</dd></div>
             </dl>
           </section>
         </aside>
         <section className="editor" aria-label="Scan workspace">
           <EditorWorkspace layout={layout} setLayout={setLayout} renderView={mapView =>
-            mapView === 'models' ? <ModelPreview preview={frame?.modelPreview} />
+            mapView === 'combined' || mapView === 'separate' || mapView === 'scan'
+              ? <ModelPreview view={mapView} preview={frame?.modelPreview} mutedDepth={mutedDepth} setMutedDepth={setMutedDepth} />
               : mapView === 'depth' ? <DepthImages observation={observation} />
               : !grid || !observation ? <p className="waiting">{link || 'Waiting for depth data'}</p>
               : mapView === 'cloud' ? <PointCloud points={observation.source === 'simulated' ? simulatedPoints(grid) : observation.points}
@@ -187,8 +202,16 @@ function Dashboard() {
                 </div>
               </>}
           />
-          {terminal && <section className="terminal" aria-label="Terminal">
-            <div className="pane-label terminal-head"><h2>Terminal</h2><button aria-label="Close terminal" onClick={() => setTerminal(false)}>×</button></div>
+          {terminal && <section className="terminal" aria-label="Plotter and terminal">
+            <div className="pane-label terminal-head">
+              <div className="terminal-tabs" role="group" aria-label="Lower panel">
+                <button aria-pressed={lowerView === 'plot'} onClick={() => setLowerView('plot')}>Plotter</button>
+                <button aria-pressed={lowerView === 'terminal'} onClick={() => setLowerView('terminal')}>Terminal</button>
+              </div>
+              <button aria-label="Close lower panel" onClick={() => setTerminal(false)}>×</button>
+            </div>
+            <RangePlot key={token ? 'phone' : 'simulation'} frame={frame} hidden={lowerView !== 'plot'} />
+            <div hidden={lowerView !== 'terminal'}>
             <div ref={terminalOutput} className="terminal-output" aria-label="Telemetry and command output">
               {[...events].reverse().map((event, i) => <div key={`${event.time}-${i}`} className="log-line">
                 <time dateTime={new Date(event.time).toISOString()}>{new Date(event.time).toLocaleTimeString('en-GB')}</time>
@@ -201,6 +224,7 @@ function Dashboard() {
               <input id="terminal-input" aria-label="Terminal command" value={commandInput} onChange={event => setCommandInput(event.target.value)}
                 placeholder="Type help" autoComplete="off" spellCheck={false} />
             </form>
+            </div>
           </section>}
         </section>
 
@@ -270,7 +294,8 @@ function Dashboard() {
         </aside>
       </div>
       <footer className="statusbar">
-        <span>Reflex {reflex ?? '—'}</span><span>Belt {belt?.connected ? 'online' : 'offline'}</span>
+        <span>Reflex {reflex ?? '—'}</span>
+        <span><i className="belt-indicator" data-on={Boolean(belt?.connected)} aria-hidden="true" />Belt {belt?.connected ? 'online' : 'offline'}</span>
       </footer>
     </main>
   )
