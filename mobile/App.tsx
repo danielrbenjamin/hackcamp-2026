@@ -243,6 +243,8 @@ export default function App() {
   useEffect(() => {
     if (!native || !previewModels || !nativeDepth?.previewHazards) return
     const listener = nativeDepth.addListener('onHazardPreview', preview => {
+      // Use partial results at startup, then keep the last complete frame visible until its replacement is ready.
+      if (preview.partial && latestModelPreview.current && !latestModelPreview.current.partial) return
       latestModelPreview.current = preview
       setModelPreview(preview)
     })

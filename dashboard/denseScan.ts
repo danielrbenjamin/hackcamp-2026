@@ -18,6 +18,14 @@ export function orientImagePoint(u: number, v: number, rotation: ReturnType<type
   }
 }
 
+export function orientRasterIndex(index: number, width: number, height: number, rotation: ReturnType<typeof scanDisplayRotation>): number {
+  if (rotation === 0) return index
+  if (rotation === 180) return width * height - 1 - index
+  const x = index % width
+  const y = Math.floor(index / width)
+  return rotation === 90 ? x * height + height - 1 - y : (width - 1 - x) * height + y
+}
+
 // Inverse of the camera-to-phone basis used to reconstruct scan returns.
 export function scanImagePoint(scan: DenseScan, point: DepthPoint): [number, number] | undefined {
   const [right, up, forward] = point

@@ -3,10 +3,55 @@ import CoreGraphics
 import CoreML
 import CoreVideo
 import Foundation
+import ImageIO
 import Vision
 import simd
 
 private enum ModelError: Error, Equatable { case missing, incompatible, noDepth }
+
+private enum ImageRotation {
+  case none, clockwise, counterclockwise, upsideDown
+
+  init(camera: ARCamera) {
+    let upX = camera.transform.columns.0.y
+    let upY = camera.transform.columns.1.y
+    if hypot(upX, upY) < 0.1 { self = .none }
+    else if abs(upX) > abs(upY) { self = upX < 0 ? .clockwise : .counterclockwise }
+    else { self = upY < 0 ? .upsideDown : .none }
+  }
+
+  var swapsAxes: Bool { self == .clockwise || self == .counterclockwise }
+
+  var visionOrientation: CGImagePropertyOrientation {
+    switch self {
+    case .none: return .up
+    case .clockwise: return .right
+    case .counterclockwise: return .left
+    case .upsideDown: return .down
+    }
+  }
+
+  func upright(_ uv: SIMD2<Float>) -> SIMD2<Float> {
+    switch self {
+    case .none: return uv
+    case .clockwise: return SIMD2(1 - uv.y, uv.x)
+    case .counterclockwise: return SIMD2(uv.y, 1 - uv.x)
+    case .upsideDown: return SIMD2(1 - uv.x, 1 - uv.y)
+    }
+  }
+
+  func sensor(_ uv: SIMD2<Float>) -> SIMD2<Float> {
+    switch self {
+    case .clockwise: return ImageRotation.counterclockwise.upright(uv)
+    case .counterclockwise: return ImageRotation.clockwise.upright(uv)
+    default: return upright(uv)
+    }
+  }
+
+  func fit(width: Int, height: Int) -> SIMD2<Float> {
+    swapsAxes ? squareFit(width: height, height: width) : squareFit(width: width, height: height)
+  }
+}
 
 private func squareFit(width: Int, height: Int) -> SIMD2<Float> {
   let longest = Float(max(1, max(width, height)))
@@ -137,6 +182,7 @@ final class HazardModels {
   func preview(_ frame: ARFrame, timeMs: Double, started: TimeInterval, session: Int, progress: (String) -> Void,
                partial: ([String: Any]) -> Void) -> [String: Any] {
     let depth = frame.sceneDepth.flatMap(DepthSamples.init)
+    let rotation = ImageRotation(camera: frame.camera)
     var status = ["glass": "Waiting", "stairs": "Waiting", "person": "Waiting"]
     var masks: [[String: Any]] = []
     var people: [[String: Any]] = []
@@ -149,7 +195,7 @@ final class HazardModels {
     else {
       do {
         progress("Running person model")
-        people = try detectPeople(frame, depth: depth, session: session)
+        people = try detectPeople(frame, depth: depth, session: session, rotation: rotation)
         versions["person"] = version("PersonDetection")
         status["person"] = "Preview"
       } catch {
@@ -166,14 +212,15 @@ final class HazardModels {
         let loaded = try model(name)
         progress("Running \(kind) model")
         let stairDepth = kind == "stairs" ? depth.stairDepths(using: frame.smoothedSceneDepth.flatMap(DepthSamples.init)) : nil
-        let input = try tensor(frame.capturedImage, depth: depth, size: size, channels: channels, stairDepth: stairDepth?.values)
+        let input = try tensor(frame.capturedImage, depth: depth, size: size, channels: channels,
+                               stairDepth: stairDepth?.values, rotation: rotation)
         let features = try MLDictionaryFeatureProvider(dictionary: ["rgbd": MLFeatureValue(multiArray: input)])
         let prediction = try loaded.prediction(from: features)
         guard let output = prediction.featureValue(for: "logits")?.multiArrayValue,
               output.shape.map(\.intValue) == [1, kind == "glass" ? 1 : 3, size, size] else {
           throw ModelError.incompatible
         }
-        masks.append(mask(output, kind: kind, size: size, depth: depth, camera: frame.camera))
+        masks.append(mask(output, kind: kind, size: size, depth: depth, camera: frame.camera, rotation: rotation))
         versions[kind] = version(name)
         if let stairDepth {
           let total = Double(depth.width * depth.height)
@@ -205,16 +252,19 @@ final class HazardModels {
     return String(error.localizedDescription.prefix(180))
   }
 
-  private func tensor(_ image: CVPixelBuffer, depth: DepthSamples, size: Int, channels: Int, stairDepth: [Float]?) throws -> MLMultiArray {
+  private func tensor(_ image: CVPixelBuffer, depth: DepthSamples, size: Int, channels: Int,
+                      stairDepth: [Float]?, rotation: ImageRotation) throws -> MLMultiArray {
     let count = size * size
     let stairs = channels == 4
-    let fit = stairs ? squareFit(width: CVPixelBufferGetWidth(image), height: CVPixelBufferGetHeight(image)) : SIMD2<Float>(repeating: 1)
+    let fit = stairs ? rotation.fit(width: CVPixelBufferGetWidth(image), height: CVPixelBufferGetHeight(image))
+      : SIMD2<Float>(repeating: 1)
     let center = SIMD2<Float>(repeating: 0.5)
-    let pixels = (0..<count).map { i in
+    let uprightPixels = (0..<count).map { i in
       let uv = SIMD2((Float(i % size) + 0.5) / Float(size), (Float(i / size) + 0.5) / Float(size))
       return (uv - center) / fit + center
     }
-    let inside = pixels.map { $0.x >= 0 && $0.x < 1 && $0.y >= 0 && $0.y < 1 }
+    let inside = uprightPixels.map { $0.x >= 0 && $0.x < 1 && $0.y >= 0 && $0.y < 1 }
+    let pixels = rotation == .none ? uprightPixels : uprightPixels.map(rotation.sensor)
     guard let rgb = sampleCameraRGB(image, pixels: pixels, bilinear: true) else { throw ModelError.noDepth }
     let raw = pixels.enumerated().map { index, uv in
       if let stairDepth { return inside[index] ? depth.bilinear(uv, values: stairDepth) : 0 }
@@ -254,10 +304,11 @@ final class HazardModels {
     return input
   }
 
-  private func mask(_ output: MLMultiArray, kind: String, size: Int, depth: DepthSamples, camera: ARCamera) -> [String: Any] {
+  private func mask(_ output: MLMultiArray, kind: String, size: Int, depth: DepthSamples,
+                    camera: ARCamera, rotation: ImageRotation) -> [String: Any] {
     let previewSize = size
     let pointStep = (previewSize + 23) / 24
-    let fit = kind == "stairs" ? squareFit(width: Int(camera.imageResolution.width), height: Int(camera.imageResolution.height))
+    let fit = kind == "stairs" ? rotation.fit(width: Int(camera.imageResolution.width), height: Int(camera.imageResolution.height))
       : SIMD2<Float>(repeating: 1)
     let center = SIMD2<Float>(repeating: 0.5)
     var labels = Data()
@@ -272,13 +323,15 @@ final class HazardModels {
       if let floats { return floats[channel * strides[1] + row * strides[2] + col * strides[3]] }
       return output[[0, NSNumber(value: channel), NSNumber(value: row), NSNumber(value: col)]].floatValue
     }
+    // Publish masks in sensor coordinates so overlays and depth projection use the same pixels.
     for y in 0..<previewSize {
       let v = (Float(y) + 0.5) / Float(previewSize)
-      let row = Int(((v - center.y) * fit.y + center.y) * Float(size))
       for x in 0..<previewSize {
         let u = (Float(x) + 0.5) / Float(previewSize)
         let uv = SIMD2(u, v)
-        let col = Int(((u - center.x) * fit.x + center.x) * Float(size))
+        let modelUV = (rotation.upright(uv) - center) * fit + center
+        let row = Int(modelUV.y * Float(size))
+        let col = Int(modelUV.x * Float(size))
         let first = logit(0, row, col)
         var label: UInt8 = 0
         var confidence: Float = 0
@@ -323,12 +376,14 @@ final class HazardModels {
             "probabilities": probabilities, "guidance": guidance.count >= 4 ? guidance : []]
   }
 
-  private func detectPeople(_ frame: ARFrame, depth: DepthSamples?, session: Int) throws -> [[String: Any]] {
+  private func detectPeople(_ frame: ARFrame, depth: DepthSamples?, session: Int,
+                            rotation: ImageRotation) throws -> [[String: Any]] {
     if personModel == nil { personModel = try VNCoreMLModel(for: model("PersonDetection")) }
     guard let personModel else { throw ModelError.incompatible }
     let request = VNCoreMLRequest(model: personModel)
     request.imageCropAndScaleOption = .scaleFill
-    try VNImageRequestHandler(cvPixelBuffer: frame.capturedImage, orientation: .up, options: [:]).perform([request])
+    try VNImageRequestHandler(cvPixelBuffer: frame.capturedImage, orientation: rotation.visionOrientation,
+                              options: [:]).perform([request])
     let results = request.results ?? []
     let candidates: [(CGRect, Float)]
     if let objects = results as? [VNRecognizedObjectObservation] {
@@ -347,11 +402,15 @@ final class HazardModels {
     for (candidate, confidence) in candidates.sorted(by: { $0.1 > $1.1 }).prefix(16) {
       let box = candidate.intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
       guard !box.isNull, !box.isEmpty else { continue }
-      var item: [String: Any] = ["box": [box.minX, box.minY, box.width, box.height], "confidence": confidence]
+      let a = rotation.sensor(SIMD2(Float(box.minX), Float(box.minY)))
+      let b = rotation.sensor(SIMD2(Float(box.maxX), Float(box.maxY)))
+      let sensorBox = [min(a.x, b.x), min(a.y, b.y), abs(a.x - b.x), abs(a.y - b.y)]
+      var item: [String: Any] = ["box": sensorBox, "confidence": confidence]
       let columns: [CGFloat] = [0.35, 0.5, 0.65]
       let rows: [CGFloat] = [0.4, 0.55, 0.7]
       let samples = columns.flatMap { x in rows.compactMap { y in
-        depth?.worldPoint(SIMD2(Float(box.minX + box.width * x), Float(box.minY + box.height * y)), camera: frame.camera)
+        let upright = SIMD2(Float(box.minX + box.width * x), Float(box.minY + box.height * y))
+        return depth?.worldPoint(rotation.sensor(upright), camera: frame.camera)
       } }
       let origin = frame.camera.transform.columns.3
       let cameraPosition = SIMD3(origin.x, origin.y, origin.z)

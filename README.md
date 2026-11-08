@@ -1,89 +1,110 @@
 # Lantern
 
-iPhone LiDAR and Google walking directions drive an ESP32 belt with three buzzers. The dashboard shows scans, guidance, and belt commands.
+```text
+██╗       █████╗  ███╗   ██╗ ████████╗ ███████╗ ██████╗  ███╗   ██╗
+██║      ██╔══██╗ ████╗  ██║ ╚══██╔══╝ ██╔════╝ ██╔══██╗ ████╗  ██║
+██║      ███████║ ██╔██╗ ██║    ██║    █████╗   ██████╔╝ ██╔██╗ ██║
+██║      ██╔══██║ ██║╚██╗██║    ██║    ██╔══╝   ██╔══██╗ ██║╚██╗██║
+███████╗ ██║  ██║ ██║ ╚████║    ██║    ███████╗ ██║  ██║ ██║ ╚████║
+╚══════╝ ╚═╝  ╚═╝ ╚═╝  ╚═══╝    ╚═╝    ╚══════╝ ╚═╝  ╚═╝ ╚═╝  ╚═══╝
+```
 
-## Run locally
+Lantern combines iPhone LiDAR, Google walking routes, and a three-buzzer ESP32 belt. The browser dashboard shows the live scan, hazard overlays, and belt commands. Test warnings while stationary and use a sighted spotter for walking tests.
 
-Use Node 22.13+ on the Node 22 line, Node 24.3+ on the Node 24 line, or Node 26+. Expo SDK 58.0.23 uses React Native 0.88.1.
+## Run the demo
+
+Use Node 22.13+ on the 22 line, 24.3+ on the 24 line, or 26+.
 
 ```sh
 npm ci
 npm run dashboard
-npm run mobile:web
 ```
 
-Open the URLs printed by Vite and Expo. Try **Obstacle**, **Sensor dropout**, and belt disconnect/reconnect. The **Descending stairs**, **Glass**, and **Crossing person** scenarios inject simulated detections. In the dashboard, use **Guidance** to compare the clearance baseline with the selected heading, **Model** to see blocked headings, and **3D scan** to see located hazards and the pedestrian prediction. The two simulators run independently. Run `npm test`, `npm run typecheck`, and `npm run build:dashboard` to check changes.
+Open the URL Vite prints. Try **Walkway**, **Obstacle**, **Sensor dropout**, and **Crossing person** with **3D scan** and **Plotter** open. The simulator supplies synthetic depth and detections to the guidance code. Model masks and boxes come from the live iPhone. Run `npm run mobile:web` in another terminal to try the app's independent simulator.
 
-## Install and test on an iPhone
+## Build for iPhone
 
-1. Transfer the repository to a Mac with Xcode 27 and CocoaPods. Run `npm ci`. Connect a LiDAR-equipped iPhone running iOS 17 or later, trust the Mac, enable Developer Mode, and select your Apple signing team.
-2. Enable Navigation SDK for iOS, Maps SDK for iOS, and Places API (New) in a billing-enabled Google Cloud project. Allow those APIs on the key and restrict it to the app's iOS bundle ID. Copy `.env.example` to `.env.local` and set `GOOGLE_MAPS_IOS_API_KEY`. A build without a key can still use simulation and LiDAR.
-3. Run `npx expo prebuild --platform ios --clean` to generate the native project, then `npm run ios`. The clean generation replaces root `ios/`. If signing needs manual setup, open the generated Xcode workspace and choose your team before running. Rebuild after changing the key or native code. For JS-only changes, use `npm run mobile`.
-4. Lantern starts in LiDAR mode on a development iPhone. Allow camera access and hold the rear camera forward about 1.2 m above the floor. With the tester stationary, bring an object directly ahead within roughly 0.85 m. The raw LiDAR beep covers the center zone, about 15° either side of the phone’s forward heading. Move the object to either side and check the zone readings under **Settings → Advanced**. Cover or interrupt the sensor and verify directional cues stop. Use **Switch to simulation** in Advanced to try the mock scenarios.
-5. Validate mounting, compass alignment, and depth coverage. Direction cues are enabled by default and require a fresh route and observed clearance. They appear on screen even with the belt disconnected. Tap **Connect belt** to receive them on the hardware, or turn off **Direction cues** to keep obstacle warnings only.
-6. Tap **Enable Google Navigation**, grant location access, and accept the Google dialog. Type or dictate a place name or address, select a suggestion, then tap **Start walk**. Verify the destination, maneuver text, and rerouting on the route card. Google turn-by-turn audio and route-start announcements for manually entered routes are off by default. Use **Route options** to enable either, or choose **Enter coordinates or Place ID** for manual entry.
+1. On a Mac with Xcode 27 and CocoaPods, run `npm ci`. Connect a LiDAR-equipped iPhone running iOS 17 or later. Trust the Mac and enable Developer Mode.
+2. For Google routing and place search, enable Navigation SDK for iOS, Maps SDK for iOS, and Places API (New) in a billing-enabled Google Cloud project. Restrict the key to those APIs and to the iOS bundle ID `com.hackcamp2026.navigationbelt`. Copy `.env.example` to `.env.local` and set `GOOGLE_MAPS_IOS_API_KEY` before prebuild. LiDAR and simulation work without the key.
+3. Run `npx expo prebuild --platform ios`, then `npm run ios`. Select the connected iPhone. If signing needs setup, open the generated Xcode workspace and select your Apple signing team.
+4. Allow camera access. With the phone held forward about 1.2 m above the floor, bring an object within 0.85 m of the phone in the center zone (about ±15°). Verify the warning. Check the zone readings under **Settings → Advanced**.
 
-Google Navigation 0.19.0 autolinks the iOS SDK. The local Expo plugin initializes the key in the generated Swift AppDelegate and adds the SDK's location and audio background modes. Run prebuild and reinstall the app to apply these native settings. [Expo SDK 58](https://expo.dev/changelog/sdk-58) · [Google’s Expo guide](https://github.com/googlemaps/react-native-navigation-sdk/blob/main/EXPO.md)
+Rebuild after Swift or model changes. If replacing a model package in an existing iOS project, run `pod install` from `ios/` before rebuilding. Rerun prebuild for changes to the Google key or Expo config. A clean prebuild replaces the generated Xcode project. For JavaScript changes, start Metro with `npm run mobile` and reload the installed development build.
 
-### Siri
+### Set a route
 
-On the iPhone, tap **Speak Destination**, wait for the vibration, then say a place name or address. The first use requests microphone and speech recognition permissions. Lantern uses on-device recognition for this button. You can also say **“Hey Siri, navigate with Lantern”** or invoke Siri with the side button. Typed entry and **Start spoken routes automatically** are under **Settings → Advanced → Enter destination or change Siri options → Route options**. Automatic start selects the first Google Places suggestion and defaults to off. Lantern speaks the selected destination when a spoken route starts. The first route may require location permission and Google’s terms. End an active route before requesting another one.
+Tap **Speak Destination**, wait for the vibration, and say a place name. The button uses on-device speech recognition and asks for microphone and speech permissions on first use. You can also say **“Hey Siri, navigate with Lantern.”**
+
+For typed entry, press and hold **Settings**, then open **Advanced → Enter destination or change Siri options**. With VoiceOver, focus **Settings** and double-tap. Enable Google Navigation, allow location access, accept Google's terms, choose a suggestion, and tap **Start walk**. **Route options** controls Google spoken directions, manual route-start announcements, and automatic start for spoken routes. Automatic start defaults to off. When enabled, it uses the first Places result. Lantern speaks the destination when a spoken route starts.
+
+Direction cues default to on and require a fresh route and a clear local corridor. The app shows the cue before a belt is connected. Tap **Connect Belt** for buzzer output.
+
+## Connect the dashboard over Tailscale
+
+1. Connect the dashboard computer and iPhone to the same tailnet. On the dashboard computer, run `tailscale serve status`. If its HTTPS root already forwards to port 5173, reuse that address. Otherwise run `tailscale serve --bg http://127.0.0.1:5173`.
+2. In `.env.local` on the dashboard computer and in the checkout running Metro, set `EXPO_PUBLIC_TELEMETRY_URL` to the HTTPS origin printed by Serve and set the same `EXPO_PUBLIC_TELEMETRY_TOKEN`. Restart both processes after editing their settings.
+3. Run `npm run dashboard` on the dashboard computer. If `npm run lakehouse:start` is already running, it serves the dashboard and upload endpoint on the same port.
+4. Open the HTTPS address in your browser. Enter the telemetry token and select **Connect phone feed**. On the iPhone, go to **Settings → Advanced** and enable **Share with dashboard** and **Share 3D scan with dashboard**.
+
+In **3D scan**, switch between **RGB** and **Depth** to recolor the same points. **Front** uses the camera framing. **Orbit** lets you rotate, pan, and zoom. **Fill gaps** uses up to 1.5 seconds of recent returns when tracking is available. **More** contains **Occupancy grid**, **Depth & confidence**, and **Combined overlay**. Drag a tab to an edge to split the workspace, or use **Full screen** on a scan or depth view.
+
+The relay keeps the latest guidance and visual snapshots in memory. Scan sharing includes depth, confidence, sampled color, and relative tracking when available. Full camera frames and raw poses are reserved for local processing and explicit recordings.
 
 ## Belt bench test
 
-The sketch in `firmware/NavigationBelt/` targets a classic ESP32 with Arduino-ESP32 3.x. The buzzer wiring is left on GPIO 25, front on GPIO 33, and right on GPIO 26. Tap **Connect belt** on the iPhone to test. Tune `directionDuty` and `warningDuty` on the bench so the wearer can hear both cues. The protocol is also usable from a BLE test client.
+Flash `firmware/NavigationBelt/NavigationBelt.ino` to a classic ESP32 using Arduino-ESP32 3.x. Wire left to GPIO 25, front to GPIO 33, and right to GPIO 26. With Bluetooth disconnected, use the USB serial monitor at 115200 baud and send `l`, `f`, or `r` to test each buzzer.
 
-- Service `08D24000-8CB7-4DAA-AE03-54C7D9655B00`
+- BLE service `08D24000-8CB7-4DAA-AE03-54C7D9655B00`
 - Write-without-response characteristic `08D24001-8CB7-4DAA-AE03-54C7D9655B00`
-- Seven bytes `[version=1, cue, farLeft, left, centre, right, farRight]`. Strengths are 0–255. Cue 0 stops, 1 pulses one or more outputs, and 2 repeats a rapid obstacle alert (75 ms on, 65 ms off). To check the centre output, write hex `01 01 00 00 FF 00 00`. Test each channel in order.
-- The phone refreshes active commands about every 200 ms. The firmware shuts the motors off on disconnect or after 600 ms without a command. The phone reads optional standard battery service `180F`, characteristic `2A19`, when provided by the belt.
-
-Trigger an obstacle while a directional cue is active, disconnect and reconnect, and verify motor shutoff on loss of the link. The dashboard reports capture-to-command-dispatch timing. Measure obstacle-to-motor timing separately on the bench.
-
-## Phone telemetry and recordings
-
-For opt-in automatic **ML recording ZIP** uploads to Databricks and a two-task file-arrival job, follow [the Lakehouse upload setup](databricks/UPLOAD_SETUP.md). This uses the existing ZIP/JSONL format and is separate from diagnostic NDJSON exports.
-
-To run the dashboard/upload server on another laptop, follow [the laptop setup guide](databricks/LAPTOP_SETUP.md). After `npm ci`, run `npm run lakehouse:test`, then `npm run lakehouse:setup` and `npm run lakehouse:start`.
-
-On the phone, press and hold **Settings** and choose **Advanced** for dashboard sharing and session recording. With VoiceOver, focus **Settings** and double-tap.
-
-With **Share 3D scan with dashboard** on, **Depth & confidence** shows distance and confidence from the same ARKit frame. Switch between **Raw** and **Smoothed** when available, and point at either image to read a pixel's distance and confidence. **Color range** controls display contrast. The 3D preview draws every finite positive sample in the ARKit depth raster, including low-confidence samples, with camera colors where available. **Front** uses the original camera framing, and **Orbit** lets you adjust rotation and tilt. Belt guidance continues to use its own range and confidence checks. Full RGB camera frames stay on-device.
-
-The live **3D scan** has **Fill gaps** on by default when the phone supplies ARKit tracking data. Move the phone slowly to observe the same surface from slightly different angles. The dashboard aligns returns from up to 1.5 seconds of recent frames and draws them only where the current frame has no depth. Turn **Fill gaps** off to compare against the current frame. Moving objects can leave brief traces. Model overlays use the frame that produced each prediction.
-
-Drag a dashboard tab to an edge of the editor to split the workspace. The tab bar also has **Split right** and **Split down** controls. Drag the divider to resize the panes or focus it and use the arrow keys. Drag a tab onto the other pane's tab bar to move it, or use the pane's close button to merge the tabs again.
-
-- For a local dashboard feed, set `EXPO_PUBLIC_TELEMETRY_URL` to a reachable local hostname such as `http://laptop.local:5173` and set the same `EXPO_PUBLIC_TELEMETRY_TOKEN` for Expo and Vite. Run `npm run dashboard -- --host 0.0.0.0` on a trusted demo LAN. In the dashboard enter the token and click **Connect phone feed**. On the phone choose **Share with dashboard**. To see actual LiDAR points, choose **iPhone LiDAR** and **Share 3D scan with dashboard**, then select **3D scan** in the dashboard. Rebuild the iPhone app to pick up the native preview support. The scan shows the current frame, with color indicating height relative to the phone. The relay keeps only the latest frame in memory and excludes raw depth images, RGB, pose, and destination text.
-- For diagnostics, choose **Start recording**, stop the session, then choose **Export session**. Each export contains up to 240 NDJSON records. Real sessions capture downsampled depth, confidence, intrinsics, pose, BEV, and navigation/reflex decisions with aligned timestamps.
-- For the Lakehouse, select **Use iPhone LiDAR** and **Start ML recording** under **Session data**. Walk with consent, choose **Stop ML recording**, then **Share ML recording ZIP**. The app captures up to 120 frames at intervals of at least one second, with inference and file writes off the guidance queue. Camera images and training data stay local until shared.
+- Packet `[1, cue, farLeft, left, centre, right, farRight]` with strengths from 0 to 255. Cues 0, 1, and 2 mean stop, direction pulse, and rapid warning. Write hex `01 01 00 00 FF 00 00` to test the front buzzer.
+- The firmware silences the buzzers on disconnect or after 600 ms without a command. Verify both on the bench. **Sensor to dispatch** measures when the app issues the command. Measure physical buzzer response separately.
 
 ## Hazard models
 
-Google computes the walking route. Lantern tests nine local corridors from −60° to +60° against LiDAR clearance and frame-aligned hazard detections, then favors directions that follow the route and stay consistent with the previous cue. If hazards eliminate all eligible directions, Lantern withholds the direction cue. The raw LiDAR reflex continues to handle immediate obstacles.
+`GlassSegmentation.mlpackage`, `StairSegmentation.mlpackage`, and `PersonDetection.mlpackage` are in `modules/navigation-depth/ios/Models/`. The models run on the iPhone. Google supplies the route heading, and Lantern selects a local direction using LiDAR clearance and the detected hazards.
 
-The three selected packages, `GlassSegmentation.mlpackage`, `StairSegmentation.mlpackage`, and `PersonDetection.mlpackage`, belong in `modules/navigation-depth/ios/Models/` and can be tracked by Git. If the iOS project already exists, run `pod install` from root `ios/` to update its model resources, then run `npm run ios` from the repo root.
+- Stair and person detections with depth can block directions and trigger the rapid warning. The person tracker projects motion up to 0.6 seconds ahead.
+- Glass supplies a bearing. It can block overlapping directions. The rapid warning still requires a separate obstacle cue.
+- Raw LiDAR warnings run independently of the models. **Preview hazard models** toggles display and sharing. Hazard inference continues with previews off.
 
-Hazard models start in iPhone LiDAR mode. **Preview hazard models** under **Settings → Advanced** controls the diagnostic preview and its sharing. With dashboard and 3D scan sharing enabled, use the **Combined overlay**, **Individual models**, or **3D scan overlay** tab.
+On the dashboard, **Individual models** shows each output. **Combined overlay** puts the masks and boxes on a single depth image. **3D scan overlay** uses the model's matching point cloud. Solid trails show measured pedestrian positions and dashed trails show the forecast. The preview timer measures native processing before upload and rendering. A partial preview can appear at startup. After the first complete frame, the dashboard keeps each complete frame visible until the next one arrives.
 
-Fresh, depth-supported stair and person detections can block a local direction and trigger the belt obstacle pattern in the forward corridor. People use measured positions and a short crossing forecast. A glass bearing with unknown distance can block overlapping direction cues but does not trigger the obstacle pattern on its own. The phone discards old results and clears them when tracking resets. The independent raw LiDAR warning has priority and continues if models are unavailable. Check the model warning transitions and false alerts on a stationary iPhone before walking with the belt.
+## Recordings and Databricks
 
-**Combined overlay** shows all three model outputs on one depth image. **3D scan overlay** adds the projected detections to the colored point cloud captured with the model frame. Both views use the matching scan even while the live view advances.
+Under **Settings → Advanced → Session data**, **Export session** shares diagnostic NDJSON with up to 240 records. **Start ML recording** captures up to 120 frames with RGB, depth, pose, and available model outputs. Stop the recording and use **Share ML recording ZIP** or enable automatic uploads.
 
-Glass uses the supplied ImageNet and valid-depth p99 transform. The stair preview preserves camera aspect ratio with zero padding, then uses 384 × 384 bilinear sampling, ImageNet RGB normalization, and valid-depth p1/p99 clipping followed by `(depth - 0.5) / 0.25` after scaling depth to 0–1. Sampled training images confirm that larger encoded values represent farther surfaces, as with iPhone depth in metres. A depth return within a glass mask may belong to the background. Pedestrian trajectories use short-range nearest-neighbor association in ARKit world coordinates and a 0.6-second constant-velocity prediction. Verify model alignment, false detections, and latency on a stationary iPhone before any navigation integration.
+### Automatic uploads
 
-In **3D scan overlay**, solid green trails show up to eight recent measured person positions. Dashed orange trails show predictions at +200, +400 and +600 ms. Front projects trails into the matching camera frame, and Orbit shows them in 3D. Tracks can survive a brief missed detection and reset when ARKit loses tracking. Check that a stationary person's trail stays in place while moving the phone, then check a walking person and a tracking interruption.
+On Windows, reuse the Tailscale Serve address from the dashboard setup. Stop any standalone dashboard process on port 5173, then run:
 
-### Earlier traversability experiment
+```sh
+npm run lakehouse:setup
+npm run lakehouse:check
+npm run lakehouse:start
+```
 
-### Lakehouse walk ingestion
+In setup, enter the Databricks workspace origin, the Tailscale HTTPS origin without `/api`, and the Databricks service principal credentials or API token. The upload identity needs `USE CATALOG`, `USE SCHEMA`, and read/write access to the `workspace.default.lantern_walks` Volume. Keep those credentials on Windows.
 
-On Databricks, upload the consented ZIP to `/Volumes/workspace/default/lantern_walks/exports/`. Run `ml/stage_walk.py` from the workspace repo with the ZIP's full volume path as its only argument, or import `stage_walk` and call it from a notebook. This stages the assets and publishes the frame JSONL under `incoming/` last. Run `databricks/lantern_lakehouse.ipynb` through the team's Lakeflow Job and check the frame count in `workspace.default.lantern_sessions`. Rerun the same input to verify Bronze and Silver counts stay stable.
+Copy only `EXPO_PUBLIC_ML_UPLOAD_URL` and `EXPO_PUBLIC_ML_UPLOAD_TOKEN` from the generated `.env.iphone.local` into `.env.local` in the checkout running Metro. Restart Metro, reload Lantern, and turn on **Upload ML recordings automatically** under **Session data**. Stopping a recording queues its ZIP. Failed uploads stay queued. Tap **Retry ML uploads** after reconnecting.
 
-The ZIP contains camera-native JPEGs, row-major little-endian Float32 depth in metres (zero means invalid), and row-major UInt8 ARKit confidence when available. Mask files contain row-major class labels in camera-image coordinates at 224 × 224 for glass or 384 × 384 for stairs. The staging script also accepts older 96 × 96 masks. Each model's score is the maximum sampled sigmoid or softmax class probability in the frame. Missing model results are omitted. Pedestrian positions are in ARKit world coordinates, and track IDs reset when tracking is reset. Extra fields such as raster dimensions and confidence paths are retained in Bronze raw JSON.
+### Lakeflow job
 
-The ML teammate can upload consented exports to an authorized Databricks Volume and run `ml/train.py` as a Python script task on a Databricks ML runtime with PySpark, PyTorch, NumPy, and MLflow 3. Pass the input path and `--experiment /Shared/navigation-belt`. At least two independent LiDAR sessions are needed. The job deduplicates frames, generates geometric candidate labels, trains with sessions held out, compares against a short-clearance baseline, and logs a versioned model and `evaluation.json`. Load that report in the dashboard. `--register-candidate catalog.schema.model` optionally registers a candidate in Unity Catalog.
+1. Import `databricks/stage_walk_exports.ipynb` and `databricks/lantern_lakehouse.ipynb`. Run the Lakehouse setup cells to create the Volume and tables.
+2. Create a job with two notebook tasks. Run `stage_walk_exports.ipynb` first and run `lantern_lakehouse.ipynb` after staging succeeds. Give the job identity access to the Volume and permission to write the Lakehouse tables. Set the maximum concurrent runs to 1.
+3. Add a file-arrival trigger for `/Volumes/workspace/default/lantern_walks/exports/`. Record a short session and verify that a ZIP lands in `exports/`, both tasks succeed, and the session appears in `workspace.default.lantern_sessions`. Check `upload_receipts/` for rejected ZIPs.
 
-The earlier export script, `ml/export_coreml.py MODEL_URI VERSION`, checks Core ML predictions against PyTorch and writes `Traversability.mlpackage`. The app's direction selector now uses clearance and hazard detections instead of those heading scores.
+Run `npm run lakehouse:test` for the local upload tests. If you change the Python staging code, regenerate the staging notebook with `python ml/build_stage_notebook.py`.
 
-The training labels are geometric candidates. Evaluate against independently reviewed outcomes before relying on a model in the field. See [AGENTS.md](AGENTS.md) for interface details.
+### Earlier BEV experiment
+
+The earlier BEV heading model remains in `ml/train.py` and `ml/export_coreml.py`. Its report can be loaded under **Model → Legacy traversability evaluation**. The live selector uses clearance and hazard geometry.
+
+## Checks
+
+```sh
+npm run typecheck
+npm test
+npm run build:dashboard
+```
+
+See [AGENTS.md](AGENTS.md) for module boundaries and telemetry details.

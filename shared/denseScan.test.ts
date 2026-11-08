@@ -1,6 +1,21 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { decodeDenseScan, fillScanGaps, orientImagePoint, scanDisplayRotation, scanImagePoint, type ScanFrame } from '../dashboard/denseScan.ts'
+import { decodeDenseScan, fillScanGaps, orientImagePoint, orientRasterIndex, scanDisplayRotation, scanImagePoint, type ScanFrame } from '../dashboard/denseScan.ts'
+
+test('rotated depth pixels stay aligned with mask and box coordinates', () => {
+  const width = 4
+  const height = 3
+  for (const rotation of [0, 90, -90, 180] as const) {
+    const sideways = Math.abs(rotation) === 90
+    const displayWidth = sideways ? height : width
+    const displayHeight = sideways ? width : height
+    for (let index = 0; index < width * height; index++) {
+      const [u, v] = orientImagePoint((index % width + 0.5) / width, (Math.floor(index / width) + 0.5) / height, rotation)
+      assert.equal(orientRasterIndex(index, width, height, rotation),
+        Math.floor(v * displayHeight) * displayWidth + Math.floor(u * displayWidth))
+    }
+  }
+})
 
 test('Front display maps gravity up to the top in either portrait orientation', () => {
   const { scan } = frame(1000, 0, [1, 1, 1])
