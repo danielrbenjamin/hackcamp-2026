@@ -42,6 +42,8 @@ Trigger an obstacle while a directional cue is active, disconnect and reconnect,
 
 ## Phone telemetry and recordings
 
+For opt-in automatic **ML recording ZIP** uploads to Databricks and a two-task file-arrival job, follow [the Lakehouse upload setup](databricks/UPLOAD_SETUP.md). This uses the existing ZIP/JSONL format and is separate from diagnostic NDJSON exports.
+
 On the phone, press and hold **Settings** and choose **Advanced** for dashboard sharing and session recording. With VoiceOver, focus **Settings** and double-tap.
 
 With **Share 3D scan with dashboard** on, **Depth & confidence** shows distance and confidence from the same ARKit frame. Switch between **Raw** and **Smoothed** when available, and point at either image to read a pixel's distance and confidence. **Color range** controls display contrast. The 3D preview draws every finite positive sample in the ARKit depth raster, including low-confidence samples, with camera colors where available. **Front** uses the original camera framing, and **Orbit** lets you adjust rotation and tilt. Belt guidance continues to use its own range and confidence checks. Full RGB camera frames stay on-device.

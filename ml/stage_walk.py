@@ -4,6 +4,8 @@ import argparse
 import json
 import re
 import shutil
+import hashlib
+from uuid import UUID
 from pathlib import Path
 from zipfile import ZipFile
 
@@ -21,19 +23,26 @@ def stage_walk(archive, volume=VOLUME):
         names = {entry.filename for entry in entries}
         metadata = [name for name in names if re.fullmatch(rf"incoming/{SESSION}\.jsonl", name)]
         if (len(metadata) != 1 or len(names) != len(entries) or len(entries) > 601
+                or any(entry.flag_bits & 1 for entry in entries)
                 or sum(entry.file_size for entry in entries) > 1_000_000_000):
             raise ValueError("Invalid Lantern walk archive")
 
         manifest = metadata[0]
         session_id = Path(manifest).stem
-        rows = [json.loads(line) for line in bundle.read(manifest).splitlines()]
+        UUID(session_id)
+        if bundle.getinfo(manifest).file_size > 20_000_000:
+            raise ValueError("Walk metadata is too large")
+        manifest_bytes = bundle.read(manifest)
+        rows = [json.loads(line) for line in manifest_bytes.splitlines()]
         if not 1 <= len(rows) <= 120:
             raise ValueError("Invalid frame count")
 
         expected = {manifest}
         for index, row in enumerate(rows):
-            if (row.get("schema_version") != 1 or row.get("source_type") != "iphone_recording"
-                    or row.get("session_id") != session_id or row.get("frame_id") != index):
+            if (not isinstance(row, dict) or not isinstance(row.get("consent"), dict)
+                    or row.get("schema_version") != 1 or row.get("source_type") != "iphone_recording"
+                    or row.get("session_id") != session_id or row.get("frame_id") != index
+                    or row.get("consent", {}).get("granted") is not True):
                 raise ValueError(f"Invalid frame metadata at row {index + 1}")
             key = f"{session_id}/{index}"
             paths = (f"rgb/{key}.jpg", f"depth/{key}.f32", f"depth/{key}.confidence.u8",
@@ -44,6 +53,8 @@ def stage_walk(archive, volume=VOLUME):
                 if row.get(field) != f"{VOLUME}/{path}":
                     raise ValueError(f"Unexpected {field} in frame {index}")
                 expected.add(path)
+            if paths[0] not in names or not 0 < bundle.getinfo(paths[0]).file_size <= 24_000_000:
+                raise ValueError(f"Invalid camera image size in frame {index}")
             width, height = row["depth_width"], row["depth_height"]
             if not all(type(size) is int and 0 < size <= 512 for size in (width, height)):
                 raise ValueError(f"Invalid depth dimensions in frame {index}")
@@ -61,6 +72,17 @@ def stage_walk(archive, volume=VOLUME):
                     raise ValueError(f"Invalid raster byte count for {path}")
         if expected != names:
             raise ValueError("Walk archive contains missing or unexpected assets")
+
+        # Retries must not overwrite a previously published session with different
+        # images under the same paths. Verify content before treating it as staged.
+        published = volume / manifest
+        if published.exists():
+            for name in expected:
+                destination = volume / name
+                if (not destination.is_file() or hashlib.sha256(destination.read_bytes()).digest()
+                        != hashlib.sha256(bundle.read(name)).digest()):
+                    raise ValueError("A different or incomplete session already exists")
+            return published
 
         # Publish metadata last so ingestion never starts on an incomplete upload.
         for name in sorted(expected - {manifest}) + [manifest]:
