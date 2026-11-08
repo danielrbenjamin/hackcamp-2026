@@ -114,11 +114,29 @@ final class HazardModels {
     return loaded
   }
 
-  func preview(_ frame: ARFrame, timeMs: Double, session: Int, progress: (String) -> Void) -> [String: Any] {
+  func preview(_ frame: ARFrame, timeMs: Double, session: Int, progress: (String) -> Void,
+               partial: ([String: Any]) -> Void) -> [String: Any] {
     let started = ProcessInfo.processInfo.systemUptime
     let depth = frame.sceneDepth.flatMap(DepthSamples.init)
-    var status: [String: String] = [:]
+    var status = ["glass": "Waiting", "stairs": "Waiting", "person": "Waiting"]
     var masks: [[String: Any]] = []
+    var people: [[String: Any]] = []
+    func snapshot(partial: Bool) -> [String: Any] {
+      ["timeMs": timeMs, "latencyMs": (ProcessInfo.processInfo.systemUptime - started) * 1_000,
+       "models": status, "masks": masks, "people": people, "partial": partial]
+    }
+    if let error = unavailable["person"] { status["person"] = error }
+    else {
+      do {
+        progress("Running person model")
+        people = try detectPeople(frame, depth: depth, session: session)
+        status["person"] = "Preview"
+      } catch {
+        status["person"] = message(error)
+        if (error as? ModelError) == .missing { unavailable["person"] = status["person"] }
+      }
+    }
+    partial(snapshot(partial: true))
     for (kind, name, size, channels) in [("glass", "GlassSegmentation", 224, 5), ("stairs", "StairSegmentation", 384, 4)] {
       if let error = unavailable[kind] { status[kind] = error; continue }
       do {
@@ -139,21 +157,9 @@ final class HazardModels {
         status[kind] = message(error)
         if (error as? ModelError) == .missing { unavailable[kind] = status[kind] }
       }
+      if kind == "glass" { partial(snapshot(partial: true)) }
     }
-    var people: [[String: Any]] = []
-    if let error = unavailable["person"] { status["person"] = error }
-    else {
-      do {
-        progress("Running person model")
-        people = try detectPeople(frame, depth: depth, session: session)
-        status["person"] = "Preview"
-      } catch {
-        status["person"] = message(error)
-        if (error as? ModelError) == .missing { unavailable["person"] = status["person"] }
-      }
-    }
-    return ["timeMs": timeMs, "latencyMs": (ProcessInfo.processInfo.systemUptime - started) * 1_000,
-            "models": status, "masks": masks, "people": people]
+    return snapshot(partial: false)
   }
 
   private func message(_ error: Error) -> String {

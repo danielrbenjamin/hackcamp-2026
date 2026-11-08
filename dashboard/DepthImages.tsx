@@ -5,7 +5,7 @@ const confidenceColors = [[236, 99, 85], [242, 192, 93], [76, 198, 178]]
 const confidenceLabels = ['Low', 'Medium', 'High']
 const distanceColors = [[40, 38, 156], [37, 112, 219], [76, 217, 229], [247, 222, 84], [235, 92, 41]]
 
-function distancePalette(maxCm: number) {
+export function distancePalette(maxCm: number) {
   return Array.from({ length: 501 }, (_, cm) => {
     if (!cm) return [0, 0, 0, 255]
     const position = Math.min(cm / maxCm, 1) * (distanceColors.length - 1)

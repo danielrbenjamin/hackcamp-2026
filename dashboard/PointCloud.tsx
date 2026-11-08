@@ -42,13 +42,14 @@ function frontBounds(points: readonly DepthPoint[] | undefined) {
   return { left: x[trim] ?? -0.5, right: x[last] ?? 0.5, bottom: y[trim] ?? -0.4, top: y[last] ?? 0.4 }
 }
 
-export function PointCloud({ points, pointColors, heading, hazards, phone, colorLabel }: {
+export function PointCloud({ points, pointColors, heading, hazards, phone, colorLabel, overlayPoints }: {
   points: readonly DepthPoint[] | undefined
   pointColors?: string
   heading: Heading | null
   hazards?: readonly Hazard[]
   phone: boolean
   colorLabel?: string
+  overlayPoints?: readonly { point: DepthPoint; rgb: number }[]
 }) {
   const [yaw, setYaw] = useState(-27)
   const [tilt, setTilt] = useState(36)
@@ -109,17 +110,16 @@ export function PointCloud({ points, pointColors, heading, hazards, phone, color
       `M${project([-5, -1.2, depth])}L${project([5, -1.2, depth])}`].join('')
   }).join('')
   const layers = new Map<string, string>()
-  const vertexData = new Float32Array((points?.length ?? 0) * 6)
+  const vertexData = new Float32Array(((points?.length ?? 0) + (overlayPoints?.length ?? 0)) * 6)
   let offset = 0
-  for (const [index, point] of (points ?? []).entries()) {
-    const pointRgb = rgb?.[index]
-    if (!orbit && point[2] < 0.08) continue
+  function addPoint(point: DepthPoint, pointRgb: number | undefined, overlay = false) {
+    if (!orbit && point[2] < 0.08) return
     const [x, y, depth] = projectPoint(point)
     const layer = point[1] < -0.95 ? 0 : point[1] < -0.45 ? 1 : point[1] < 0.2 ? 2 : 3
     const color = pointRgb ?? heightRgb[layer]
     vertexData[offset++] = x / centerX - 1
     vertexData[offset++] = 1 - y / 210
-    vertexData[offset++] = depth / (1 + Math.abs(depth))
+    vertexData[offset++] = depth / (1 + Math.abs(depth)) - (overlay ? 0.002 : 0)
     vertexData[offset++] = (color >> 16) / 255
     vertexData[offset++] = ((color >> 8) & 255) / 255
     vertexData[offset++] = (color & 255) / 255
@@ -128,6 +128,8 @@ export function PointCloud({ points, pointColors, heading, hazards, phone, color
       layers.set(stroke, (layers.get(stroke) ?? '') + `M${x.toFixed(1)},${y.toFixed(1)}h2.1`)
     }
   }
+  points?.forEach((point, index) => addPoint(point, rgb?.[index]))
+  overlayPoints?.forEach(({ point, rgb }) => addPoint(point, rgb, true))
   const direction = (heading ?? 0) * Math.PI / 180
   const origin = project([0, -1.2, 0])
   const axes = [

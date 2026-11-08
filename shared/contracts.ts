@@ -17,7 +17,9 @@ export interface DepthPreview {
 export interface ModelPreview {
   timeMs: number
   latencyMs: number
+  partial?: boolean
   depthPreview?: DepthPreview
+  scan?: { points: readonly DepthPoint[]; pointColors?: string }
   models: Record<'glass' | 'stairs' | 'person', string>
   masks: { kind: 'glass' | 'stairs'; size: number; labels: string; points: readonly DepthPoint[] }[]
   people: { box: readonly [number, number, number, number]; confidence: number; position?: DepthPoint; predictedPosition?: DepthPoint }[]

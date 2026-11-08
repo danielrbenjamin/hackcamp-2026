@@ -45,7 +45,7 @@ export default function App() {
   const [recordStatus, setRecordStatus] = useState('')
   const [streaming, setStreaming] = useState(false)
   const [sharePoints, setSharePoints] = useState(false)
-  const [previewModels, setPreviewModels] = useState(false)
+  const [previewModels, setPreviewModels] = useState(true)
   const [modelPreview, setModelPreview] = useState<ModelPreview>()
   const [modelProgress, setModelProgress] = useState('')
   const latestModelPreview = useRef<ModelPreview | undefined>(undefined)
@@ -350,7 +350,7 @@ export default function App() {
           {nativeDepth?.previewHazards && <SettingSwitch label="Preview hazard models"
             hint="Shows model results for testing. Guidance still uses LiDAR clearance."
             value={previewModels} onChange={setPreviewModels} />}
-          {previewModels && <Text style={styles.muted}>{modelPreview
+          {previewModels && nativeDepth?.previewHazards && <Text style={styles.muted}>{modelPreview
             ? `Glass: ${modelPreview.models.glass}. Stairs: ${modelPreview.models.stairs}. People: ${modelPreview.models.person}.`
             : status !== 'running' ? `Waiting for iPhone LiDAR (${status}).`
               : modelProgress ? `${modelProgress}…` : 'Waiting for the first model result from the iPhone.'}</Text>}
