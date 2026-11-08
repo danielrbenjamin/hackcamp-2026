@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { HAZARD_LABELS, type DenseScan, type DepthPoint, type Grid, type Hazard, type Heading, type ModelPreview } from '../shared/contracts'
 import { CloudCanvas } from './CloudCanvas'
 import { decodeDenseScan, fillScanGaps, SCAN_HISTORY_MS, type ScanFrame } from './denseScan'
-import { modelPointColors } from './modelColors'
 
 const colors = ['#49608b', '#59a8b2', '#a1b979', '#e9ae6b']
 const heightRgb = colors.map(color => parseInt(color.slice(1), 16))
@@ -44,7 +43,7 @@ function frontBounds(points: readonly DepthPoint[] | undefined) {
   return { left: x[trim] ?? -0.5, right: x[last] ?? 0.5, bottom: y[trim] ?? -0.4, top: y[last] ?? 0.4 }
 }
 
-export function PointCloud({ points, pointColors, heading, hazards, phone, colorLabel, overlayPoints, people, imageAspect = 4 / 3, cameraOverlay, denseScan, fillRecent, modelMasks }: {
+export function PointCloud({ points, pointColors, heading, hazards, phone, colorLabel, overlayPoints, people, imageAspect = 4 / 3, cameraOverlay, denseScan, fillRecent }: {
   points: readonly DepthPoint[] | undefined
   pointColors?: string
   heading: Heading | null
@@ -57,7 +56,6 @@ export function PointCloud({ points, pointColors, heading, hazards, phone, color
   cameraOverlay?: { coordinates?: string; content: ReactNode }
   denseScan?: DenseScan
   fillRecent?: boolean
-  modelMasks?: ModelPreview['masks']
 }) {
   const [yaw, setYaw] = useState(-27)
   const [tilt, setTilt] = useState(36)
@@ -103,10 +101,6 @@ export function PointCloud({ points, pointColors, heading, hazards, phone, color
   const fused = useMemo(() => trackedScan && currentDense
     ? fillScanGaps({ scan: trackedScan, decoded: currentDense }, history) : undefined, [trackedScan, currentDense, history])
   const dense = fused ?? currentDense
-  // Semantic labels belong only to measured points from this exact frame.
-  const semanticColors = useMemo(() => denseScan && currentDense && modelMasks
-    ? modelPointColors(denseScan, currentDense.indices, modelMasks) : undefined,
-  [denseScan, currentDense, modelMasks])
   const visiblePoints = dense?.points ?? points
   const showCameraOverlay = !orbit && (!!dense || !!imageCoordinates)
   const hasCameraColor = dense ? !!dense.colors.length : !!rgb?.length
@@ -177,8 +171,8 @@ export function PointCloud({ points, pointColors, heading, hazards, phone, color
       layers.set(stroke, (layers.get(stroke) ?? '') + `M${x.toFixed(1)},${y.toFixed(1)}h2.1`)
     }
   }
-  visiblePoints?.forEach((point, index) => addPoint(point, semanticColors?.[index] ?? (dense ? dense.colors[index] : rgb?.[index]), false, index))
-  if (!showCameraOverlay && !semanticColors) overlayPoints?.forEach(({ point, rgb }) => addPoint(point, rgb, true))
+  visiblePoints?.forEach((point, index) => addPoint(point, dense ? dense.colors[index] : rgb?.[index], false, index))
+  if (!showCameraOverlay) overlayPoints?.forEach(({ point, rgb }) => addPoint(point, rgb, true))
   const direction = (heading ?? 0) * Math.PI / 180
   const origin = project([0, -1.2, 0])
   const axes = [
