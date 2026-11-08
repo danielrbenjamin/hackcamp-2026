@@ -11,12 +11,18 @@ import { ActionButton as Control } from './ActionButton'
 import { SettingSwitch } from './SettingSwitch'
 import { mono, terminal } from './terminal'
 import { createRecording, telemetrySummary } from './session'
+import { scanPose } from '../shared/roomScan'
 
 const telemetryUrl = process.env.EXPO_PUBLIC_TELEMETRY_URL
 const telemetryToken = process.env.EXPO_PUBLIC_TELEMETRY_TOKEN
 const disconnected: BeltStatus = { connected: false, battery: null, source: 'ble' }
 const beltDirections = ['Turn farther left', 'Veer left', 'Go straight', 'Veer right', 'Turn farther right']
 const scenarioChoices = Object.keys(scenarios) as Scenario[]
+
+function hasFreshRouteLocation(route: Route): boolean {
+  const age = Date.now() - (route.updatedAtMs ?? 0)
+  return age >= 0 && age < 3_000
+}
 
 export default function App() {
   const { width, fontScale } = useWindowDimensions()
@@ -44,6 +50,7 @@ export default function App() {
   const realBelt = useRef(disconnected)
   const google = useRef<Route | null>(null)
   const latestFrame = useRef<Telemetry>(null)
+  const trackingEpoch = useRef(0)
   const recordingActive = useRef(false)
   const session = useRef<ReturnType<typeof createRecording>>(null)
   const lastRecorded = useRef(0)
@@ -111,6 +118,7 @@ export default function App() {
     }) : undefined
     const onStatus = native ? nativeDepth?.addListener('onStatus', event => {
       setStatus(event.status)
+      if (event.status === 'running') trackingEpoch.current++
       if (event.status !== 'running') latest = emptyObservation()
     }) : undefined
     function stop() {
@@ -130,8 +138,7 @@ export default function App() {
           const route = google.current
           if (!route) return { source: 'google', status: 'idle', destination: '', desiredHeading: null, maneuver: '' }
           const heading = latest.forwardTrueHeading
-          const current = route.updatedAtMs && Date.now() - route.updatedAtMs < 3_000
-          const desiredHeading = current && heading !== undefined && route.trueBearing !== undefined
+          const desiredHeading = hasFreshRouteLocation(route) && heading !== undefined && route.trueBearing !== undefined
             ? ((route.trueBearing - heading + 540) % 360) - 180 : null
           return { ...route, desiredHeading }
         } : mock.providers.navigation,
@@ -139,7 +146,7 @@ export default function App() {
           status: () => beltEnabled ? realBelt.current : disconnected,
           send: command => nativeDepth?.sendBelt(command.cue, command.motors),
         } : mock.providers.belt,
-      }, fieldGuidance && beltEnabled)
+      }, fieldGuidance)
       if (native) nativeDepth?.start()
       tick()
       timer = setInterval(tick, 100)
@@ -166,15 +173,26 @@ export default function App() {
     let request: AbortController | undefined
     let active = true
     let sentAt = 0
+    const scanId = Math.random().toString(36).slice(2)
+    let epoch = -1
+    let scanOrigin: number[] | undefined
     const interval = setInterval(() => {
       const value = latestFrame.current
       if (request || !value || value.observation.timeMs <= sentAt || AppState.currentState === 'background') return
       sentAt = value.observation.timeMs
+      let relativePose
+      if (native && sharePoints && value.observation.points?.length && value.observation.pose) {
+        if (epoch !== trackingEpoch.current) {
+          epoch = trackingEpoch.current
+          scanOrigin = value.observation.pose
+        }
+        if (scanOrigin) relativePose = scanPose(value.observation.pose, scanOrigin, `${scanId}-${epoch}`)
+      }
       request = new AbortController()
       const timeout = setTimeout(() => request?.abort(), 1_500)
       void fetch(endpoint, { method: 'POST', signal: request.signal,
         headers: { Authorization: `Bearer ${telemetryToken}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify(telemetrySummary(value, native && sharePoints)),
+        body: JSON.stringify(telemetrySummary(value, native && sharePoints, relativePose)),
       }).then(response => {
         if (active) setStreamStatus(response.ok ? 'Streaming to dashboard' : `Dashboard returned ${response.status}`)
       }, () => { if (active) setStreamStatus('Dashboard unreachable') }).finally(() => {
@@ -220,14 +238,15 @@ export default function App() {
     : hazardHold ? 'Caution. A hazard blocks guidance.'
     : cue === 'unavailable' ? 'LiDAR cannot verify clearance.' : null
   const motor = frame?.command.motors.findIndex(strength => strength > 0) ?? -1
-  const direction = cue === 'direction' && frame?.belt.connected ? beltDirections[motor] : undefined
+  const direction = cue === 'direction' ? beltDirections[motor] : undefined
   const guidanceStatus = direction ?? warning ?? (
     !frame ? 'Waiting for sensor data'
-      : !frame.belt.connected ? 'Connect the belt'
       : native && !fieldGuidance ? 'Direction cues are off'
       : frame.route.status === 'idle' ? 'Start a walk'
       : frame.route.status === 'rerouting' ? 'Waiting for Google to update the route'
-      : frame.route.desiredHeading === null ? 'Waiting for the route direction and phone heading'
+      : native && !hasFreshRouteLocation(frame.route) ? 'Waiting for a fresh Google location. Try outdoors.'
+      : native && frame.route.trueBearing === undefined ? 'Google has no route direction at this location'
+      : native && frame.observation.forwardTrueHeading === undefined ? 'Phone heading unavailable. Hold the rear camera facing forward.'
       : 'No clear direction toward the route'
   )
 

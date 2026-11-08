@@ -1,5 +1,6 @@
-import { useState } from 'react'
-import { HAZARD_LABELS, type DepthPoint, type Grid, type Hazard, type Heading } from '../shared/contracts'
+import { useEffect, useRef, useState } from 'react'
+import { HAZARD_LABELS, type DepthPoint, type Grid, type Hazard, type Heading, type ScanPose } from '../shared/contracts'
+import { addScanFrame } from '../shared/roomScan'
 
 const colors = ['#49608b', '#59a8b2', '#a1b979', '#e9ae6b']
 
@@ -18,28 +19,53 @@ export function simulatedPoints(grid: Grid): DepthPoint[] {
   })
 }
 
-export function PointCloud({ points, heading, hazards, phone }: {
+export function PointCloud({ points, heading, hazards, phone, scanPose, timeMs }: {
   points: readonly DepthPoint[] | undefined
   heading: Heading | null
   hazards?: readonly Hazard[]
   phone: boolean
+  scanPose?: ScanPose
+  timeMs: number
 }) {
   const [yaw, setYaw] = useState(-27)
+  const [zoom, setZoom] = useState(1)
+  const [room, setRoom] = useState(false)
+  const [roomPoints, setRoomPoints] = useState<DepthPoint[]>([])
+  const roomScan = useRef({ session: '', timeMs: -Infinity, voxels: new Map<string, DepthPoint>() })
+  useEffect(() => {
+    const scan = roomScan.current
+    const session = phone && points !== undefined ? scanPose?.session ?? scan.session : ''
+    if (scan.session !== session) {
+      scan.session = session
+      scan.timeMs = -Infinity
+      scan.voxels.clear()
+      setRoomPoints([])
+    }
+    if (!room || !scanPose || !points?.length || timeMs <= scan.timeMs) return
+    scan.timeMs = timeMs
+    addScanFrame(scan.voxels, points, scanPose)
+    setRoomPoints([...scan.voxels.values()])
+  }, [room, scanPose, points, phone, timeMs])
+  const roomAvailable = phone && points !== undefined && (!!scanPose || roomPoints.length > 0)
+  const showRoom = room && roomAvailable
+  const visiblePoints = showRoom ? roomPoints : points
+  const scale = 58 * zoom * (phone && !showRoom ? 1.6 : 1)
+  const centerDepth = showRoom ? 0 : phone ? 1.75 : 2.5
   const angle = yaw * Math.PI / 180
   const sin = Math.sin(angle)
   const cos = Math.cos(angle)
   function project([right, up, forward]: DepthPoint) {
-    return [360 + (right * cos + (forward - 2.5) * sin) * 58,
-      212 - (up * 0.8 + ((forward - 2.5) * cos - right * sin) * 0.59) * 58]
+    return [360 + (right * cos + (forward - centerDepth) * sin) * scale,
+      212 - (up * 0.8 + ((forward - centerDepth) * cos - right * sin) * 0.59) * scale]
   }
   const grid = Array.from({ length: 11 }, (_, i) => {
     const x = i - 5
-    const depth = i / 2
-    return [`M${project([x, -1.2, 0])}L${project([x, -1.2, 5])}`,
+    const depth = showRoom ? x : i / 2
+    return [`M${project([x, -1.2, showRoom ? -5 : 0])}L${project([x, -1.2, 5])}`,
       `M${project([-5, -1.2, depth])}L${project([5, -1.2, depth])}`].join('')
   }).join('')
   const layers = colors.map(() => '')
-  for (const point of points ?? []) {
+  for (const point of visiblePoints ?? []) {
     const [x, y] = project(point)
     const layer = point[1] < -0.95 ? 0 : point[1] < -0.45 ? 1 : point[1] < 0.2 ? 2 : 3
     layers[layer] += `M${x.toFixed(1)},${y.toFixed(1)}h2.1`
@@ -61,9 +87,9 @@ export function PointCloud({ points, heading, hazards, phone }: {
           <text x={end[0] + 4} y={end[1] - 3} fill={color} fontSize="10">{label}</text>
         </g>)}
         <circle cx={project([0, 0, 0])[0]} cy={project([0, 0, 0])[1]} r="4" fill="#c2f2ff" />
-        {heading !== null && <path d={`M${project([0, -1.18, 0])}L${project([Math.sin(direction) * 2, -1.18, Math.cos(direction) * 2])}`}
+        {!showRoom && heading !== null && <path d={`M${project([0, -1.18, 0])}L${project([Math.sin(direction) * 2, -1.18, Math.cos(direction) * 2])}`}
           stroke="#c2f2ff" strokeWidth="2" strokeDasharray="5 4" />}
-        {hazards?.map((hazard, index) => {
+        {!showRoom && hazards?.map((hazard, index) => {
           if (!('position' in hazard)) return null
           const [x, y] = project(hazard.position)
           const color = hazard.kind === 'person' ? '#ffc373' : '#ff8d81'
@@ -75,11 +101,21 @@ export function PointCloud({ points, heading, hazards, phone }: {
           </g>
         })}
       </svg>
-      <div className="scan-label">{phone ? 'ARKIT' : 'SIM'} / {points?.length ?? 0} points</div>
-      {!points?.length && <p className="scan-empty">{!phone ? 'No depth returns' : points ? 'No depth returns' : 'Enable 3D scan sharing on the iPhone'}</p>}
+      <div className="scan-label">{showRoom ? 'ROOM SCAN' : phone ? 'ARKIT' : 'SIM'} / {visiblePoints?.length ?? 0} points</div>
+      {!visiblePoints?.length && <p className="scan-empty">{showRoom ? 'Pan slowly to scan the room' : !phone || points ? 'No depth returns' : 'Enable 3D scan sharing on the iPhone'}</p>}
     </div>
     <div className="legend">
-      <span><i className="height-scale" />Height relative to phone</span>
+      <span><i className="height-scale" />{showRoom ? 'Height relative to scan origin' : 'Height relative to phone'}</span>
+      {roomAvailable && <div className="scan-modes">
+        <button aria-pressed={!room} onClick={() => setRoom(false)}>Live</button>
+        <button aria-pressed={room} onClick={() => setRoom(true)}>Room scan</button>
+        {room && <button onClick={() => {
+          roomScan.current.voxels.clear()
+          setRoomPoints([])
+        }}>Clear scan</button>}
+      </div>}
+      <label className="orbit">Zoom <input type="range" min="0.6" max="2.5" step="0.05" value={zoom}
+        onChange={event => setZoom(Number(event.target.value))} /></label>
       <label className="orbit">Rotate <input type="range" min="-70" max="70" value={yaw}
         onChange={event => setYaw(Number(event.target.value))} /></label>
     </div>

@@ -4,7 +4,20 @@ export type Five<T> = readonly [T, T, T, T, T]
 export type Heading = typeof HEADINGS[number]
 export type Cell = 0 | 1 | 2 // unknown, observed free, occupied
 export type DepthPoint = readonly [right: number, up: number, forward: number]
-export const MAX_DEPTH_POINTS = 900
+export interface ScanPose {
+  session: string
+  origin: DepthPoint
+  yaw: number
+}
+export const MAX_DEPTH_POINTS = 3_000
+export const MAX_DEPTH_PREVIEW_DIMENSION = 128
+export interface DepthPreview {
+  width: number
+  height: number
+  // Base64, row-major little-endian words. Low 14 bits are centimetres (0 = missing).
+  // The high two bits are ARKit confidence.
+  samples: string
+}
 export const MAX_HAZARDS = 32
 export const HAZARD_LABELS = { stairs: 'Possible descending stairs', glass: 'Possible glass', person: 'Person' } as const
 
@@ -32,6 +45,8 @@ export interface Observation {
   sensorTimeMs?: number
   forwardTrueHeading?: number
   points?: readonly DepthPoint[]
+  depthPreview?: DepthPreview
+  scanPose?: ScanPose
   // Frame-aligned detections. Undefined means unavailable; [] means no detections.
   hazards?: readonly Hazard[]
   depth?: {

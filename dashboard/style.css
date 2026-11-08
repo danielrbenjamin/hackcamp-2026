@@ -70,12 +70,23 @@ button:disabled { opacity: .45; cursor: default; }
 .cloud, .map { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
 .map { padding: clamp(8px, 2vmin, 22px); }
 .scan-label { position: absolute; top: 10px; left: 12px; color: var(--muted); font-size: .78rem; }
+.depth-images { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding: 12px; flex: 1; min-height: 0; overflow: auto; }
+.depth-images figure { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: 8px; margin: 0; min-height: 0; }
+.depth-images figcaption { display: flex; justify-content: space-between; gap: 6px; color: var(--cyan); }
+.depth-images figcaption span { color: var(--muted); }
+.depth-images canvas { width: 100%; height: 100%; object-fit: contain; image-rendering: pixelated; background: #080b0f; }
+.depth-key { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; color: var(--muted); font-size: .78rem; }
+.depth-key i { display: inline-block; width: 8px; height: 8px; margin-right: 4px; }
+.depth-key .depth-scale { width: 60px; background: linear-gradient(90deg, rgb(35, 85, 230), rgb(255, 235, 50)); }
 .scan-empty, .waiting { position: absolute; top: 44%; width: 100%; padding: 0 10px; text-align: center; color: var(--muted); }
 .legend { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 7px; min-height: 31px; padding: 4px 9px; color: var(--muted); font-size: .76rem; border-top: 1px solid #20282e; }
 .legend-items { display: flex; gap: 8px; flex-wrap: wrap; }
 .legend i { display: inline-block; width: 10px; height: 7px; margin-right: 5px; border: 1px solid var(--line); }
 .legend .height-scale { width: 35px; background: linear-gradient(90deg, #49608b, #59a8b2, #a1b979, #e9ae6b); }
 .orbit { display: flex; align-items: center; gap: 6px; }
+.scan-modes { display: flex; gap: 4px; flex-wrap: wrap; }
+.scan-modes button { padding: 3px 6px; border: 1px solid var(--line); }
+.scan-modes button[aria-pressed="true"] { color: var(--cyan); border-color: var(--cyan); }
 .orbit input { width: 86px; accent-color: var(--cyan); }
 .terminal { min-width: 0; border-top: 1px solid var(--line); background: #0c1013; }
 .terminal-head { justify-content: space-between; min-height: 29px; }

@@ -5,6 +5,7 @@ import { createLoop } from '../shared/guidance'
 import { createMock, scenarios, type Scenario } from '../shared/mock'
 import { LANTERN_BANNER } from '../shared/lantern'
 import { PointCloud, simulatedPoints } from './PointCloud'
+import { DepthImages } from './DepthImages'
 import './style.css'
 
 const cueLabels = { idle: 'Waiting for guidance', direction: 'Directional cue', obstacle: 'Obstacle warning', unavailable: 'Depth unavailable' }
@@ -20,7 +21,7 @@ function Dashboard() {
   const [tokenInput, setTokenInput] = useState('')
   const [token, setToken] = useState('')
   const [link, setLink] = useState('')
-  const [mapView, setMapView] = useState<'cloud' | 'grid'>('cloud')
+  const [mapView, setMapView] = useState<'cloud' | 'grid' | 'depth'>('cloud')
   const [evaluation, setEvaluation] = useState<Evaluation>()
   const [evaluationError, setEvaluationError] = useState('')
   const [events, setEvents] = useState<{ time: number; text: string }[]>([])
@@ -167,11 +168,14 @@ function Dashboard() {
           <div className="editor-tabs" role="group" aria-label="Map view">
             <button aria-pressed={mapView === 'cloud'} onClick={() => setMapView('cloud')}><span aria-hidden="true">[+]</span> 3D scan</button>
             <button aria-pressed={mapView === 'grid'} onClick={() => setMapView('grid')}><span aria-hidden="true">[#]</span> Occupancy grid</button>
+            <button aria-pressed={mapView === 'depth'} onClick={() => setMapView('depth')}>Depth & confidence</button>
           </div>
           <div className="viewport">
-            {!grid || !observation ? <p className="waiting">{link || 'Waiting for depth data'}</p>
+            {mapView === 'depth' ? <DepthImages preview={observation?.depthPreview} />
+              : !grid || !observation ? <p className="waiting">{link || 'Waiting for depth data'}</p>
               : mapView === 'cloud' ? <PointCloud points={observation.source === 'simulated' ? simulatedPoints(grid) : observation.points}
-                heading={heading} hazards={detections} phone={observation.source === 'arkit'} /> : <>
+                heading={heading} hazards={detections} phone={observation.source === 'arkit'}
+                scanPose={observation.scanPose} timeMs={observation.timeMs} /> : <>
                 <div className="scan">
                   <svg className="map" viewBox={`0 0 ${grid.width} ${grid.height}`} role="img" aria-label="Occupancy grid with device at bottom centre">
                     {grid.cells.map((cell, i) => <rect key={i} x={i % grid.width} y={Math.floor(i / grid.width)} width=".94" height=".94" fill={cellColors[cell]} />)}

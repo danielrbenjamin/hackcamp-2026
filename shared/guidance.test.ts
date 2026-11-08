@@ -93,7 +93,7 @@ test('physical belt refreshes a reflex command before the firmware timeout', () 
   assert.equal(sends, 2)
 })
 
-test('real direction requires explicit opt-in and observed corridor cells', () => {
+test('native direction requires enabled guidance and observed corridor cells, even without a belt', () => {
   const mock = createMock()
   const { providers } = mock
   const route = { ...providers.navigation(), desiredHeading: 0, source: 'google' as const }
@@ -105,5 +105,6 @@ test('real direction requires explicit opt-in and observed corridor cells', () =
   const unknown = { ...native, lidar: () => ({ ...known, grid: emptyObservation().grid }) }
   assert.equal(createLoop(unknown, true).tick().heading, null)
   mock.setConnected(false)
-  assert.equal(createLoop(native, true).tick().heading, null)
+  const offline = { ...native, belt: { ...native.belt, send: () => assert.fail('Sent a command to a disconnected belt') } }
+  assert.equal(createLoop(offline, true).tick().heading, 0)
 })

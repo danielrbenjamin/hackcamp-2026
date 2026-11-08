@@ -1,4 +1,4 @@
-import { useEffect, useEffectEvent, useRef, useState, type ComponentRef } from 'react'
+import { useCallback, useEffect, useEffectEvent, useRef, useState, type ComponentRef } from 'react'
 import { AccessibilityInfo, Keyboard, Pressable, StyleSheet, Text, TextInput, View } from 'react-native'
 import { requestForegroundPermissionsAsync } from 'expo-location'
 import { AudioGuidanceMode, NavigationProvider, NavigationSessionStatus, NavState, RouteStatus, TravelMode, useNavigation } from '@googlemaps/react-native-navigation-sdk'
@@ -144,44 +144,50 @@ function WalkingRoute({ onRoute, siriDestination }: GoogleRouteProps) {
     Keyboard.dismiss()
   }
 
+  const publishRoute = useCallback(() => {
+    const state = session.current
+    if (!state.active) return
+    const bearing = state.location && !state.rerouting ? routeBearing(state.location, state.path) : null
+    onRoute({ source: 'google', status: state.rerouting ? 'rerouting' : 'guiding',
+      destination: state.destination, maneuver: state.maneuver, desiredHeading: null,
+      trueBearing: bearing ?? undefined, updatedAtMs: state.locationAtMs })
+  }, [onRoute])
+
+  const refreshRoute = useCallback(async () => {
+    const state = session.current
+    const request = ++state.request
+    try {
+      const segment = await controller.getCurrentRouteSegment()
+      if (!state.active || request !== state.request) return
+      state.path = segment?.segmentLatLngList ?? []
+    } catch {
+      if (!state.active || request !== state.request) return
+      state.path = []
+    }
+    state.rerouting = state.path.length < 2
+    publishRoute()
+  }, [controller, publishRoute])
+
   useEffect(() => {
     const state = session.current
     state.alive = true
-    function publish() {
-      if (!state.active) return
-      const bearing = state.location && !state.rerouting ? routeBearing(state.location, state.path) : null
-      onRoute({ source: 'google', status: state.rerouting ? 'rerouting' : 'guiding',
-        destination: state.destination, maneuver: state.maneuver, desiredHeading: null,
-        trueBearing: bearing ?? undefined, updatedAtMs: state.locationAtMs })
-    }
-    async function refresh() {
-      const request = ++state.request
-      try {
-        const segment = await controller.getCurrentRouteSegment()
-        if (!state.active || request !== state.request) return
-        state.path = segment?.segmentLatLngList ?? []
-        state.rerouting = state.path.length < 2
-        publish()
-      } catch {
-        if (request === state.request) { state.path = []; state.rerouting = true; publish() }
-      }
-    }
     setOnLocationChanged(location => {
+      if (!Number.isFinite(location.lat) || !Number.isFinite(location.lng)) return
       state.location = location
       state.locationAtMs = Date.now()
       setLocationReady(true)
-      publish()
+      publishRoute()
     })
-    setOnRouteChanged(() => { if (state.active) void refresh() })
+    setOnRouteChanged(() => { if (state.active) void refreshRoute() })
     setOnReroutingRequestedByOffRoute(() => {
       ++state.request
       state.path = []
       state.rerouting = true
-      publish()
+      publishRoute()
     })
     setOnTurnByTurn(events => {
       const event = events[0]
-      if (!state.active || !event) return
+      if (!state.active || !event || event.navState === NavState.UNKNOWN) return
       if (event.navState !== NavState.ENROUTE) {
         ++state.request
         state.path = []
@@ -190,9 +196,9 @@ function WalkingRoute({ onRoute, siriDestination }: GoogleRouteProps) {
       } else {
         const instruction = event.currentStep?.instruction?.trim()
         if (instruction) state.maneuver = instruction
-        if (event.routeChanged || !state.path.length || state.rerouting) void refresh()
+        if (event.routeChanged || !state.path.length || state.rerouting) void refreshRoute()
       }
-      publish()
+      publishRoute()
     })
     setOnArrival(event => {
       if (!event.isFinalDestination) return
@@ -214,7 +220,8 @@ function WalkingRoute({ onRoute, siriDestination }: GoogleRouteProps) {
       onRoute(null)
       if (state.initialized) void controller.cleanup().catch(() => {})
     }
-  }, [controller, onRoute, setOnArrival, setOnLocationChanged, setOnReroutingRequestedByOffRoute, setOnRouteChanged, setOnTurnByTurn])
+  }, [controller, onRoute, publishRoute, refreshRoute, setOnArrival, setOnLocationChanged,
+    setOnReroutingRequestedByOffRoute, setOnRouteChanged, setOnTurnByTurn])
 
   async function connect() {
     if (working.current) return
@@ -281,18 +288,8 @@ function WalkingRoute({ onRoute, siriDestination }: GoogleRouteProps) {
       } catch (error) {
         console.warn('Route started, but the announcement could not play.', error)
       }
-      onRoute({ source: 'google', status: 'guiding', destination: title,
-        maneuver: state.maneuver, desiredHeading: null, updatedAtMs: state.locationAtMs })
-      const request = ++state.request
-      void controller.getCurrentRouteSegment().then(segment => {
-        if (!state.active || request !== state.request) return
-        state.path = segment?.segmentLatLngList ?? []
-        state.rerouting = state.path.length < 2
-        const bearing = state.location ? routeBearing(state.location, state.path) : null
-        onRoute({ source: 'google', status: state.rerouting ? 'rerouting' : 'guiding',
-          destination: title, maneuver: state.maneuver, desiredHeading: null, trueBearing: bearing ?? undefined,
-          updatedAtMs: state.locationAtMs })
-      }).catch(() => {})
+      publishRoute()
+      void refreshRoute()
     } catch (error) {
       state.active = false
       setGuiding(false)

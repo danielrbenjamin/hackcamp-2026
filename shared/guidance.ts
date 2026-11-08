@@ -77,7 +77,7 @@ export function createLoop(providers: Providers, allowNativeGuidance = false) {
       const route = providers.navigation()
       const belt = providers.belt.status()
       const eligible = hazard === 'clear' &&
-        (observation.source === 'simulated' || (allowNativeGuidance && belt.connected && route.source === 'google'))
+        (observation.source === 'simulated' || (allowNativeGuidance && route.source === 'google'))
       const detections = observation.hazards
       const blockedHeadings = hazard !== 'clear' || detections === undefined ? []
         : validHazards(detections) ? HEADINGS.filter(heading => detections.some(detection => blocksCorridor(detection, heading)))
