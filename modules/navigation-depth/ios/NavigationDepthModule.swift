@@ -15,7 +15,13 @@ public final class NavigationDepthModule: Module {
 
   public func definition() -> ModuleDefinition {
     Name("NavigationDepth")
-    Events("onObservation", "onStatus", "onBeltStatus", "onSiriDestination", "onHazardPreview", "onHazardPreviewStatus", "onDenseScan")
+    Events("onObservation", "onStatus", "onBeltStatus", "onSiriDestination", "onHazardPreview", "onHazardPreviewStatus", "onDenseScan", "onWalkFrame")
+    AsyncFunction("startWalkRecording") { [sensor = self.sensor] in
+      sensor.startWalkRecording()
+    }.runOnQueue(.main)
+    AsyncFunction("finishWalkRecording") { [sensor = self.sensor] (promise: Promise) in
+      sensor.finishWalkRecording(promise)
+    }.runOnQueue(.main)
     AsyncFunction("takeSiriDestination") { () -> String? in
       let defaults = UserDefaults.standard
       let key = "lantern.siri.destination"
@@ -121,9 +127,28 @@ private final class DepthSensor: NSObject, ARSessionDelegate {
   private var hazardPending = false
   private var firstHazardPreview = true
   private var lastHazardTime = -Double.infinity
+  private var walk: WalkRecording?
+  private var walkCount = 0
+  private var worldEpoch = 0
+  private var relocalizing = false
   private var recentHits: [(time: TimeInterval, points: [SIMD2<Float>])] = []
   var recording = false
   private var previewing = false
+
+  func startWalkRecording() {
+    guard walk == nil else { return }
+    walk = WalkRecording()
+    walkCount = 0
+  }
+
+  func finishWalkRecording(_ promise: Promise) {
+    guard let walk else { promise.reject("ERR_WALK", "No walk recording is active."); return }
+    self.walk = nil
+    hazardQueue.async {
+      do { promise.resolve(try walk.finish().absoluteString) }
+      catch { promise.reject("ERR_WALK", error.localizedDescription) }
+    }
+  }
 
   func setDepthPreview(_ enabled: Bool) {
     previewing = enabled
@@ -187,6 +212,8 @@ private final class DepthSensor: NSObject, ARSessionDelegate {
     scanOrigin = nil
     scanSession = UUID().uuidString
     hazardGeneration += 1
+    worldEpoch += 1
+    relocalizing = false
     lastHazardTime = -Double.infinity
     firstHazardPreview = true
     recentHits.removeAll()
@@ -276,14 +303,21 @@ private final class DepthSensor: NSObject, ARSessionDelegate {
         }
       }
     }
-    if hazardEnabled, !hazardPending, frame.timestamp - lastHazardTime >= 0.65,
+    if case .limited(.relocalizing) = frame.camera.trackingState {
+      if !relocalizing { worldEpoch += 1; hazardGeneration += 1 }
+      relocalizing = true
+    } else { relocalizing = false }
+    let capture = walkCount < WalkRecording.limit && frame.sceneDepth != nil ? walk : nil
+    if hazardEnabled || capture != nil, !hazardPending,
+       frame.timestamp - lastHazardTime >= (capture == nil ? 0.65 : 1),
        case .normal = frame.camera.trackingState {
       hazardPending = true
       lastHazardTime = frame.timestamp
       let generation = hazardGeneration
       let run = runID
-      let reportProgress = firstHazardPreview
-      let shareScan = previewing
+      let epoch = worldEpoch
+      let reportProgress = hazardEnabled && firstHazardPreview
+      let shareScan = hazardEnabled && previewing
       let scanRun = scanGeneration
       if reportProgress { emit("onHazardPreviewStatus", ["message": "Preparing the first model preview"]) }
       hazardQueue.async { [weak self, hazardModels = self.hazardModels] in
@@ -300,7 +334,7 @@ private final class DepthSensor: NSObject, ARSessionDelegate {
           var frame = result
           frame["depthPreview"] = backdrop
           frame["denseScan"] = scan
-          let preview = frame
+          let preview = Self.publicPreview(frame)
           DispatchQueue.main.async { [weak self] in
             guard let self, self.runID == run, self.hazardEnabled, self.hazardGeneration == generation else { return }
             var payload = preview
@@ -308,12 +342,17 @@ private final class DepthSensor: NSObject, ARSessionDelegate {
             self.emit?("onHazardPreview", payload)
           }
         })
+        let count = capture?.capture(frame, timeMs: timestamp, predictions: result, epoch: epoch)
         result["depthPreview"] = backdrop
         result["denseScan"] = scan
-        let preview = result
+        let preview = Self.publicPreview(result)
         DispatchQueue.main.async {
           guard let self else { return }
           self.hazardPending = false
+          if let capture, self.walk === capture, let count {
+            self.walkCount = count
+            self.emit?("onWalkFrame", ["count": count])
+          }
           guard self.runID == run, self.hazardEnabled, self.hazardGeneration == generation else { return }
           self.firstHazardPreview = false
           var payload = preview
@@ -322,6 +361,23 @@ private final class DepthSensor: NSObject, ARSessionDelegate {
         }
       }
     }
+  }
+
+  private static func publicPreview(_ result: [String: Any]) -> [String: Any] {
+    var preview = result
+    preview.removeValue(forKey: "versions")
+    preview["people"] = (result["people"] as? [[String: Any]] ?? []).map { person in
+      var person = person
+      person.removeValue(forKey: "track_id")
+      person.removeValue(forKey: "world")
+      return person
+    }
+    preview["masks"] = (result["masks"] as? [[String: Any]] ?? []).map { mask in
+      var mask = mask
+      mask.removeValue(forKey: "probabilities")
+      return mask
+    }
+    return preview
   }
 
   private func retainRecentHits(pose: simd_float4x4, forward: SIMD2<Float>, time: TimeInterval, cells: inout [Int]) {

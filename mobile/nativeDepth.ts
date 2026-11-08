@@ -16,6 +16,7 @@ interface Events {
   onHazardPreview: ModelPreview
   onHazardPreviewStatus: { message: string }
   onDenseScan: ScanPreview
+  onWalkFrame: { count: number }
 }
 
 interface DepthModule {
@@ -29,6 +30,8 @@ interface DepthModule {
   getSiriAutoStart?(): boolean
   setSiriAutoStart?(enabled: boolean): void
   recordDepth(enabled: boolean): void
+  startWalkRecording?(): Promise<void>
+  finishWalkRecording?(): Promise<string>
   previewDepth?(enabled: boolean): void
   hasDenseScan?(): boolean
   previewHazards?(enabled: boolean): void

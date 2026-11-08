@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ComponentRef } from 'react'
 import { AccessibilityInfo, AppState, Platform, ScrollView, StyleSheet, Text, TextInput, useWindowDimensions, View } from 'react-native'
+import { File } from 'expo-file-system'
+import { shareAsync } from 'expo-sharing'
 import { ZONE_NAMES, type BeltStatus, type DenseScan, type DepthPreview, type ModelPreview, type Route, type Telemetry } from '../shared/contracts'
 import { createLoop } from '../shared/guidance'
 import { LANTERN_BANNER } from '../shared/lantern'
@@ -43,6 +45,10 @@ export default function App() {
   const [recording, setRecording] = useState(false)
   const [count, setCount] = useState(0)
   const [recordStatus, setRecordStatus] = useState('')
+  const [walkState, setWalkState] = useState<'idle' | 'starting' | 'recording' | 'finishing' | 'sharing'>('idle')
+  const [walkCount, setWalkCount] = useState(0)
+  const [walkURI, setWalkURI] = useState('')
+  const [walkStatus, setWalkStatus] = useState('')
   const [streaming, setStreaming] = useState(false)
   const [sharePoints, setSharePoints] = useState(false)
   const [previewModels, setPreviewModels] = useState(true)
@@ -245,6 +251,45 @@ export default function App() {
     if (native) nativeDepth?.recordDepth(true)
   }
 
+  useEffect(() => {
+    if (!nativeDepth?.startWalkRecording) return
+    const listener = nativeDepth.addListener('onWalkFrame', ({ count }) => setWalkCount(count))
+    return () => listener.remove()
+  }, [])
+
+  async function toggleWalkRecording() {
+    if (!nativeDepth?.startWalkRecording || !nativeDepth.finishWalkRecording) return
+    setWalkStatus('')
+    if (walkState === 'recording') {
+      setWalkState('finishing')
+      try { setWalkURI(await nativeDepth.finishWalkRecording()) }
+      catch (error) { setWalkStatus(String(error)) }
+      finally { setWalkState('idle') }
+    } else {
+      setWalkState('starting')
+      try {
+        await nativeDepth.startWalkRecording()
+        if (walkURI) {
+          try { new File(walkURI).delete() } catch { /* Temporary files can be purged by iOS. */ }
+        }
+        setWalkURI('')
+        setWalkCount(0)
+        setWalkState('recording')
+      } catch (error) {
+        setWalkStatus(String(error))
+        setWalkState('idle')
+      }
+    }
+  }
+
+  async function shareWalk() {
+    setWalkState('sharing')
+    setWalkStatus('')
+    try { await shareAsync(walkURI, { mimeType: 'application/zip', UTI: 'public.zip-archive' }) }
+    catch (error) { setWalkStatus(String(error)) }
+    finally { setWalkState('idle') }
+  }
+
   function setSensorMode(value: boolean) {
     stopRecording()
     latestFrame.current = null
@@ -380,6 +425,15 @@ export default function App() {
         {!recording && count > 0 && <Control label="Export session" onPress={() => {
           void session.current?.share().catch(error => setRecordStatus(String(error)))
         }} />}
+        {nativeDepth?.startWalkRecording && (native || walkState !== 'idle' || !!walkURI) && <>
+          <Text accessibilityRole="header" style={styles.kicker}>ML recording</Text>
+          <Text style={styles.muted}>Saves camera images, depth, pose, and model results on this iPhone. Share only walks you have consent to collect. Up to 120 frames.</Text>
+          <Control label={walkState === 'recording' ? 'Stop ML recording' : walkState === 'finishing' ? 'Preparing export…' : 'Start ML recording'}
+            disabled={walkState !== 'recording' && (walkState !== 'idle' || status !== 'running' || !native)}
+            onPress={() => { void toggleWalkRecording() }} />
+          <Text style={styles.muted}>{walkCount} frames{walkCount >= 120 && walkState === 'recording' ? ' · Limit reached. Stop to export.' : ''}{walkStatus ? ` · ${walkStatus}` : ''}</Text>
+          {walkURI && <Control label="Share ML recording ZIP" disabled={walkState !== 'idle'} onPress={() => { void shareWalk() }} />}
+        </>}
         {telemetryUrl && telemetryToken && <>
           <Control label={streaming ? 'Stop sharing' : 'Share with dashboard'}
             onPress={() => { setStreaming(!streaming); setSharePoints(false); setStreamStatus(streaming ? '' : 'Connecting…') }} />

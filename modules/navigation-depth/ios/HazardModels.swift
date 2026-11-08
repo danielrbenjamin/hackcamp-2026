@@ -109,7 +109,7 @@ final class HazardModels {
   private var models: [String: MLModel] = [:]
   private var unavailable: [String: String] = [:]
   private var personModel: VNCoreMLModel?
-  private var previousPeople: [SIMD3<Float>] = []
+  private var previousPeople: [(id: String, world: SIMD3<Float>)] = []
   private var previousTime = -Double.infinity
   private var previousSession = -1
 
@@ -137,15 +137,17 @@ final class HazardModels {
     var status = ["glass": "Waiting", "stairs": "Waiting", "person": "Waiting"]
     var masks: [[String: Any]] = []
     var people: [[String: Any]] = []
+    var versions: [String: String] = [:]
     func snapshot(partial: Bool) -> [String: Any] {
       ["timeMs": timeMs, "latencyMs": (ProcessInfo.processInfo.systemUptime - started) * 1_000,
-       "models": status, "masks": masks, "people": people, "partial": partial]
+       "models": status, "masks": masks, "people": people, "partial": partial, "versions": versions]
     }
     if let error = unavailable["person"] { status["person"] = error }
     else {
       do {
         progress("Running person model")
         people = try detectPeople(frame, depth: depth, session: session)
+        versions["person"] = version("PersonDetection")
         status["person"] = "Preview"
       } catch {
         status["person"] = message(error)
@@ -169,6 +171,7 @@ final class HazardModels {
           throw ModelError.incompatible
         }
         masks.append(mask(output, kind: kind, size: size, depth: depth, camera: frame.camera))
+        versions[kind] = version(name)
         if let stairDepth {
           let total = Double(depth.width * depth.height)
           let recovered = Int((100 * Double(stairDepth.recovered) / total).rounded())
@@ -184,6 +187,12 @@ final class HazardModels {
       if kind == "glass" { partial(snapshot(partial: true)) }
     }
     return snapshot(partial: false)
+  }
+
+  private func version(_ name: String) -> String {
+    let metadata = models[name]?.modelDescription.metadata[.versionString] as? String
+    let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown"
+    return metadata.flatMap { $0.isEmpty ? nil : $0 } ?? "\(name)@app-build-\(build)"
   }
 
   private func message(_ error: Error) -> String {
@@ -249,6 +258,7 @@ final class HazardModels {
     let center = SIMD2<Float>(repeating: 0.5)
     var labels = Data()
     var points: [[Float]] = []
+    var probabilities: [Float] = [0, 0]
     for y in 0..<previewSize {
       for x in 0..<previewSize {
         let uv = SIMD2((Float(x) + 0.5) / Float(previewSize), (Float(y) + 0.5) / Float(previewSize))
@@ -260,10 +270,18 @@ final class HazardModels {
         if kind == "glass" {
           // A logit of zero is the sigmoid threshold of 0.5.
           if first.isFinite && first >= 0 { label = 1 }
+          if first.isFinite { probabilities[0] = max(probabilities[0], 1 / (1 + exp(-first))) }
         } else {
           let riser = output[[0, 1, row, col]].floatValue
           let tread = output[[0, 2, row, col]].floatValue
           if riser > first || tread > first { label = tread > riser ? 2 : 1 }
+          if first.isFinite, riser.isFinite, tread.isFinite {
+            let peak = max(first, max(riser, tread))
+            let r = exp(riser - peak), t = exp(tread - peak)
+            let total = exp(first - peak) + r + t
+            probabilities[0] = max(probabilities[0], r / total)
+            probabilities[1] = max(probabilities[1], t / total)
+          }
         }
         labels.append(label)
         if label != 0, x % 4 == 0, y % 4 == 0, points.count < 576,
@@ -272,7 +290,8 @@ final class HazardModels {
         }
       }
     }
-    return ["kind": kind, "size": previewSize, "labels": labels.base64EncodedString(), "points": points]
+    return ["kind": kind, "size": previewSize, "labels": labels.base64EncodedString(), "points": points,
+            "probabilities": probabilities]
   }
 
   private func detectPeople(_ frame: ARFrame, depth: DepthSamples?, session: Int) throws -> [[String: Any]] {
@@ -295,7 +314,7 @@ final class HazardModels {
     }
     let dt = frame.timestamp - previousTime
     var unused = previousSession == session && dt > 0 && dt < 1.8 ? previousPeople : []
-    var current: [SIMD3<Float>] = []
+    var current: [(id: String, world: SIMD3<Float>)] = []
     let people: [[String: Any]] = candidates.sorted { $0.1 > $1.1 }.prefix(16).compactMap { candidate, confidence in
       let box = candidate.intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
       guard !box.isNull, !box.isEmpty else { return nil }
@@ -310,14 +329,18 @@ final class HazardModels {
       let sorted = samples.sorted { simd_distance($0, cameraPosition) < simd_distance($1, cameraPosition) }
       if sorted.count >= 3 {
         let world = sorted[sorted.count / 2]
-        current.append(world)
+        var trackID = UUID().uuidString
         item["position"] = relativePoint(world, camera: frame.camera)
-        if let index = unused.indices.min(by: { simd_distance(unused[$0], world) < simd_distance(unused[$1], world) }),
-           simd_distance(unused[index], world) <= Float(dt) * 2 {
+        if let index = unused.indices.min(by: { simd_distance(unused[$0].world, world) < simd_distance(unused[$1].world, world) }),
+           simd_distance(unused[index].world, world) <= Float(dt) * 2 {
           let previous = unused.remove(at: index)
-          let predicted = world + (world - previous) * Float(0.6 / dt)
+          trackID = previous.id
+          let predicted = world + (world - previous.world) * Float(0.6 / dt)
           item["predictedPosition"] = relativePoint(predicted, camera: frame.camera)
         }
+        current.append((trackID, world))
+        item["track_id"] = trackID
+        item["world"] = [world.x, world.y, world.z]
       }
       return item
     }
