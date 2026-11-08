@@ -9,8 +9,8 @@ export interface ScanPose {
   origin: DepthPoint
   yaw: number
 }
-export const MAX_DEPTH_POINTS = 3_000
-export const MAX_DEPTH_PREVIEW_DIMENSION = 128
+export const MAX_DEPTH_POINTS = 6_000
+export const MAX_DEPTH_PREVIEW_DIMENSION = 256
 export interface DepthPreview {
   width: number
   height: number
@@ -45,6 +45,8 @@ export interface Observation {
   sensorTimeMs?: number
   forwardTrueHeading?: number
   points?: readonly DepthPoint[]
+  // Base64 RGB bytes in the same order as points. Sent only with scan sharing.
+  pointColors?: string
   depthPreview?: DepthPreview
   scanPose?: ScanPose
   // Frame-aligned detections. Undefined means unavailable; [] means no detections.

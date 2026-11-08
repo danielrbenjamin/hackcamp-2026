@@ -27,7 +27,7 @@ export function telemetryRelay(token: string | undefined): Plugin {
         request.setEncoding('utf8')
         request.on('data', chunk => {
           body += chunk
-          if (body.length > 144_000) request.destroy()
+          if (body.length > 360_000) request.destroy()
         })
         request.on('end', () => {
           try {
@@ -35,6 +35,7 @@ export function telemetryRelay(token: string | undefined): Plugin {
             const observation = frame?.observation
             const grid = observation?.grid
             const points = observation?.points
+            const colors = observation?.pointColors
             const preview = observation?.depthPreview
             const validPreview = preview === undefined || (preview && [preview.width, preview.height].every(
               size => Number.isInteger(size) && size > 0 && size <= MAX_DEPTH_PREVIEW_DIMENSION) &&
@@ -43,10 +44,12 @@ export function telemetryRelay(token: string | undefined): Plugin {
               Buffer.from(preview.samples, 'base64').length === preview.width * preview.height * 2)
             const validPoints = points === undefined || (Array.isArray(points) && points.length <= MAX_DEPTH_POINTS &&
               points.every(point => Array.isArray(point) && point.length === 3 && point.every(Number.isFinite)))
+            const validColors = colors === undefined || (Array.isArray(points) && points.length > 0 &&
+              typeof colors === 'string' && colors.length === points.length * 4 && /^[A-Za-z0-9+/]+$/.test(colors))
             if (frame?.schemaVersion !== 1 || !Number.isFinite(observation?.timeMs) ||
               !Array.isArray(observation?.zones) || observation.zones.length !== 5 ||
               grid?.width !== 40 || grid.height !== 20 || !Array.isArray(grid.cells) || grid.cells.length !== 800 ||
-              observation.depth !== undefined || observation.pose !== undefined || !validPoints || !validPreview ||
+              observation.depth !== undefined || observation.pose !== undefined || !validPoints || !validPreview || !validColors ||
               (observation.scanPose !== undefined && (!points?.length || !validScanPose(observation.scanPose))) ||
               (observation.hazards !== undefined && !validHazards(observation.hazards)) ||
               !Array.isArray(frame.command?.motors) || frame.command.motors.length !== 5 || !frame.route || !frame.belt) {

@@ -354,6 +354,7 @@ export default function App() {
             onPress={() => { setStreaming(!streaming); setSharePoints(false); setStreamStatus(streaming ? '' : 'Connecting…') }} />
           {streaming && native && nativeDepth?.previewDepth && <Control
             label={sharePoints ? 'Stop sharing 3D scan' : 'Share 3D scan with dashboard'}
+            hint={sharePoints ? undefined : 'Shares depth and sampled camera colors for the point cloud'}
             selected={sharePoints} onPress={() => setSharePoints(!sharePoints)} />}
           <Text style={styles.muted}>{streamStatus}</Text>
         </>}
