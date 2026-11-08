@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { HAZARD_LABELS, type DenseScan, type DepthPoint, type Grid, type Hazard, type Heading, type ModelPreview } from '../shared/contracts'
 import { CloudCanvas } from './CloudCanvas'
-import { decodeDenseScan, fillScanGaps, SCAN_HISTORY_MS, type ScanFrame } from './denseScan'
+import { decodeDenseScan, fillScanGaps, scanImagePoint, SCAN_HISTORY_MS, type ScanFrame } from './denseScan'
 import { modelPointColors } from './modelColors'
 
 const colors = ['#49608b', '#59a8b2', '#a1b979', '#e9ae6b']
@@ -215,7 +215,7 @@ export function PointCloud({ points, pointColors, heading, hazards, phone, color
         })}
         {showCameraOverlay && cameraOverlay && <svg x={imageX} y={imageY} width={imageWidth} height={imageHeight}
           viewBox="0 0 96 96" preserveAspectRatio="none">{cameraOverlay?.content}</svg>}
-        {!showCameraOverlay && people?.map(({ position, predictedPosition, box, confidence }, index) => {
+        {people?.map(({ position, predictedPosition, box, confidence, trackId, history, trajectory }, index) => {
           if (!position || position[2] < 0.08) return null
           const [right, up, forward] = position
           // Estimate a box on the plane of the observed return using the image box size.
@@ -226,11 +226,27 @@ export function PointCloud({ points, pointColors, heading, hazards, phone, color
             [right + halfWidth, up - halfHeight, forward], [right - halfWidth, up - halfHeight, forward],
           ]
           const [x, y] = project(corners[0])
-          return <g key={index}>
-            <polygon points={corners.map(project).join(' ')} fill="none" stroke="var(--model-person)" strokeWidth="2" vectorEffect="non-scaling-stroke" />
-            <text x={x + 3} y={y - 4} fill="var(--model-person)" fontSize="12">Person {Math.round(confidence * 100)}%</text>
-            {predictedPosition && <path d={`M${project(position)}L${project(predictedPosition)}`}
-              stroke="#ffc373" strokeWidth="2" strokeDasharray="5 4" />}
+          const projectTrail = (point: DepthPoint) => {
+            if (showCameraOverlay && denseScan) {
+              const uv = scanImagePoint(denseScan, point)
+              return uv ? [imageX + uv[0] * imageWidth, imageY + uv[1] * imageHeight] : undefined
+            }
+            return orbit || point[2] >= 0.08 ? project(point) : undefined
+          }
+          const trail = (points: readonly DepthPoint[]) => {
+            const projected = points.map(projectTrail)
+            return projected.every(point => point !== undefined) ? projected.join(' ') : undefined
+          }
+          const future = trajectory?.length ? [position, ...trajectory] : predictedPosition ? [position, predictedPosition] : []
+          return <g key={trackId ?? index}>
+            {!showCameraOverlay && <>
+              <polygon points={corners.map(project).join(' ')} fill="none" stroke="var(--model-person)" strokeWidth="2" vectorEffect="non-scaling-stroke" />
+              <text x={x + 3} y={y - 4} fill="var(--model-person)" fontSize="12">Person {trackId === undefined ? '' : `#${trackId} `}{Math.round(confidence * 100)}%</text>
+            </>}
+            {history && history.length > 1 && <polyline points={trail(history)}
+              fill="none" stroke="var(--model-person)" strokeWidth="2" opacity=".65" />}
+            {future.length > 1 && <polyline points={trail(future)}
+              fill="none" stroke="#ffc373" strokeWidth="2" strokeDasharray="5 4" />}
           </g>
         })}
       </svg>

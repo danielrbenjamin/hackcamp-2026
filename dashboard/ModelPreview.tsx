@@ -140,6 +140,7 @@ export function ModelPreview({ preview }: { preview?: Preview }) {
         <ModelKey />
         {alignedScan && <span>Colors label measured depth returns. Person boxes are 2D detections.</span>}
         {preview.masks.some(mask => mask.kind === 'glass') && <span>Glass labels do not establish glass distance; LiDAR may return the surface behind it.</span>}
+        <span>Person trails show recent measured positions; dashed paths estimate the next 0.6 seconds.</span>
         {!alignedScan && <span>Rebuild Lantern for aligned masks and boxes in Front view.</span>}
         {unlocated > 0 && <span>{unlocated} person {unlocated === 1 ? 'box is' : 'boxes are'} available only in 2D.</span>}
       </div>

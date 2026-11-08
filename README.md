@@ -63,6 +63,21 @@ Model previews start when you select **Use iPhone LiDAR**. Turn them off under *
 
 Glass uses the supplied ImageNet and valid-depth p99 transform. The stair preview preserves camera aspect ratio with zero padding, then uses 384 × 384 bilinear sampling, ImageNet RGB normalization, and valid-depth p1/p99 clipping followed by `(depth - 0.5) / 0.25` after scaling depth to 0–1. Sampled training images confirm that larger encoded values represent farther surfaces, as with iPhone depth in metres. A depth return within a glass mask may belong to the background. Pedestrian trajectories use short-range nearest-neighbor association in ARKit world coordinates and a 0.6-second constant-velocity prediction. Verify model alignment, false detections, and latency on a stationary iPhone before any navigation integration.
 
+### Person trajectory preview
+
+The native `PersonTrajectory.swift` tracker associates confidence-filtered LiDAR positions in ARKit world coordinates, retains session-local track IDs across short missed detections, and smooths horizontal velocity. Each current detection can publish up to eight measured history points (four seconds) and three constant-velocity predictions at +200, +400 and +600 ms. These are geometric motion estimates, not a trained trajectory model or BoT-SORT. An initial detection has no prediction. Tracks expire after 1.8 seconds without a match and reset after tracking loss, session changes or non-increasing timestamps. No depth means only a 2D detection; unmatched tracks are never emitted as current people.
+
+Rebuild the development app on a Mac using `npm run ios`. Enable **Preview hazard models**, **Share with dashboard** and **Share 3D scan with dashboard**, then select **Model preview → 3D scan overlay**. Solid person trails show recent measurements; dashed orange paths show the 0.6-second forecast in Front and Orbit views. Both trails are transformed into the current model frame; Front uses the scan's intrinsics and camera basis. These diagnostics do not feed belt guidance.
+
+Before demoing, run the standalone tracker checks on a Mac:
+
+```sh
+swiftc modules/navigation-depth/ios/PersonTrajectory.swift modules/navigation-depth/tests/PersonTrajectoryCheck.swift -o /tmp/lantern-person-check
+/tmp/lantern-person-check
+```
+
+Then verify on a LiDAR iPhone: a stationary person while the phone moves, a walking person, two people changing detection order, missing depth, and a tracking interruption. Confirm the initial frame and expired tracks have no forecast. Close crossings and occlusion can still swap IDs; inference cadence and depth noise limit accuracy.
+
 ### Earlier traversability experiment
 
 The ML teammate can upload consented exports to an authorized Databricks Volume and run `ml/train.py` as a Python script task on a Databricks ML runtime with PySpark, PyTorch, NumPy, and MLflow 3. Pass the input path and `--experiment /Shared/navigation-belt`. At least two independent LiDAR sessions are needed. The job deduplicates frames, generates geometric candidate labels, trains with sessions held out, compares against a short-clearance baseline, and logs a versioned model and `evaluation.json`. Load that report in the dashboard. `--register-candidate catalog.schema.model` optionally registers a candidate in Unity Catalog.

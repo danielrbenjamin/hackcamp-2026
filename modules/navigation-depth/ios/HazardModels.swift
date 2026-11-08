@@ -109,9 +109,7 @@ final class HazardModels {
   private var models: [String: MLModel] = [:]
   private var unavailable: [String: String] = [:]
   private var personModel: VNCoreMLModel?
-  private var previousPeople: [SIMD3<Float>] = []
-  private var previousTime = -Double.infinity
-  private var previousSession = -1
+  private let personTrajectory = PersonTrajectory()
 
   private func model(_ name: String) throws -> MLModel {
     if let cached = models[name] { return cached }
@@ -291,12 +289,12 @@ final class HazardModels {
     } else {
       candidates = try personFeatures(results)
     }
-    let dt = frame.timestamp - previousTime
-    var unused = previousSession == session && dt > 0 && dt < 1.8 ? previousPeople : []
     var current: [SIMD3<Float>] = []
-    let people: [[String: Any]] = candidates.sorted { $0.1 > $1.1 }.prefix(16).compactMap { candidate, confidence in
+    var locatedIndices: [Int] = []
+    var people: [[String: Any]] = []
+    for (candidate, confidence) in candidates.sorted(by: { $0.1 > $1.1 }).prefix(16) {
       let box = candidate.intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
-      guard !box.isNull, !box.isEmpty else { return nil }
+      guard !box.isNull, !box.isEmpty else { continue }
       var item: [String: Any] = ["box": [box.minX, box.minY, box.width, box.height], "confidence": confidence]
       let columns: [CGFloat] = [0.35, 0.5, 0.65]
       let rows: [CGFloat] = [0.4, 0.55, 0.7]
@@ -308,20 +306,24 @@ final class HazardModels {
       let sorted = samples.sorted { simd_distance($0, cameraPosition) < simd_distance($1, cameraPosition) }
       if sorted.count >= 3 {
         let world = sorted[sorted.count / 2]
+        locatedIndices.append(people.count)
         current.append(world)
         item["position"] = relativePoint(world, camera: frame.camera)
-        if let index = unused.indices.min(by: { simd_distance(unused[$0], world) < simd_distance(unused[$1], world) }),
-           simd_distance(unused[index], world) <= Float(dt) * 2 {
-          let previous = unused.remove(at: index)
-          let predicted = world + (world - previous) * Float(0.6 / dt)
-          item["predictedPosition"] = relativePoint(predicted, camera: frame.camera)
-        }
       }
-      return item
+      people.append(item)
     }
-    previousSession = session
-    previousTime = frame.timestamp
-    previousPeople = current
+    let tracks = personTrajectory.update(current, time: frame.timestamp, session: session)
+    for (index, personIndex) in locatedIndices.enumerated() {
+      guard let track = tracks[index] else { continue }
+      people[personIndex]["trackId"] = track.id
+      people[personIndex]["history"] = track.history.compactMap { relativePoint($0.position, camera: frame.camera) }
+      let trajectory = track.future.compactMap { relativePoint($0, camera: frame.camera) }
+      if let predicted = trajectory.last {
+        people[personIndex]["predictedPosition"] = predicted
+        people[personIndex]["trajectory"] = trajectory
+        people[personIndex]["predictionHorizonMs"] = 600
+      }
+    }
     return people
   }
 

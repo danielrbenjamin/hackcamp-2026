@@ -366,6 +366,11 @@ export default function App() {
           {nativeDepth?.previewHazards && <SettingSwitch label="Preview hazard models"
             hint="Shows model results for testing. Guidance still uses LiDAR clearance."
             value={previewModels} onChange={setPreviewModels} />}
+          {previewModels && modelPreview && <Text style={styles.muted}>
+            {modelPreview.people.filter(person => person.trackId !== undefined).length} people tracked in 3D.
+            {' '}{modelPreview.people.filter(person => person.trajectory?.length).length} with a 0.6-second motion estimate.
+            {' '}View movement trails in the dashboard model preview.
+          </Text>}
           {previewModels && nativeDepth?.previewHazards && <Text style={styles.muted}>{modelPreview
             ? `Glass: ${modelPreview.models.glass}. Stairs: ${modelPreview.models.stairs}. People: ${modelPreview.models.person}.`
             : status !== 'running' ? `Waiting for iPhone LiDAR (${status}).`

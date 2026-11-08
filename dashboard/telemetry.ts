@@ -1,6 +1,7 @@
 import type { Plugin } from 'vite'
 import { MAX_DEPTH_POINTS, MAX_DEPTH_PREVIEW_DIMENSION, MAX_SCAN_PIXELS, type DenseScan, type DepthPreview } from '../shared/contracts.ts'
 import { validHazards } from '../shared/hazards.ts'
+import { validPersonPreview } from '../shared/personPreview.ts'
 function validDenseScan(value: unknown) {
   if (value === undefined) return true
   if (!value || typeof value !== 'object') return false
@@ -53,12 +54,7 @@ export function validModelPreview(preview: unknown) {
       /^[A-Za-z0-9+/]+={0,2}$/.test(mask.labels) &&
       Buffer.from(mask.labels, 'base64').length === mask.size * mask.size && Array.isArray(mask.points) &&
       mask.points.length <= 576 && mask.points.every(point)) &&
-    Array.isArray(people) && people.length <= 16 && people.every(person => person &&
-      Array.isArray(person.box) && person.box.length === 4 &&
-      person.box.every(n => Number.isFinite(n) && n >= 0 && n <= 1) &&
-      Number.isFinite(person.confidence) && person.confidence >= 0 && person.confidence <= 1 &&
-      (person.position === undefined || point(person.position)) &&
-      (person.predictedPosition === undefined || point(person.predictedPosition)))
+    Array.isArray(people) && people.length <= 16 && people.every(validPersonPreview)
 }
 
 export function telemetryRelay(token: string | undefined): Plugin {

@@ -37,7 +37,17 @@ export interface ModelPreview {
   // Row-major labels in unrotated captured-image UV coordinates, unpadded by iOS.
   // points is retained for older clients; new clients color denseScan directly.
   masks: { kind: 'glass' | 'stairs'; size: number; labels: string; points: readonly DepthPoint[] }[]
-  people: { box: readonly [number, number, number, number]; confidence: number; position?: DepthPoint; predictedPosition?: DepthPoint }[]
+  people: {
+    box: readonly [number, number, number, number]
+    confidence: number
+    position?: DepthPoint
+    predictedPosition?: DepthPoint
+    trackId?: number
+    // All points use the current preview frame's phone-relative coordinates.
+    history?: readonly DepthPoint[]
+    trajectory?: readonly DepthPoint[] // Predicted samples at +200, +400, +600 ms.
+    predictionHorizonMs?: number
+  }[]
 }
 export const MAX_HAZARDS = 32
 export const HAZARD_LABELS = { stairs: 'Possible descending stairs', glass: 'Possible glass', person: 'Person' } as const

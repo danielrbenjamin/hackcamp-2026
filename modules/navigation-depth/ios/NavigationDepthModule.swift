@@ -115,6 +115,7 @@ private final class DepthSensor: NSObject, ARSessionDelegate {
   private var scanSession = UUID().uuidString
   private var lastScanTime = -Double.infinity
   private let hazardModels = HazardModels()
+  private var hazardTrackingNormal = false
   private let hazardQueue = DispatchQueue(label: "navigation.hazard-preview", qos: .utility)
   private var hazardEnabled = false
   private var hazardGeneration = 0
@@ -199,10 +200,14 @@ private final class DepthSensor: NSObject, ARSessionDelegate {
   }
 
   func session(_ session: ARSession, didFailWithError error: Error) {
+    hazardGeneration += 1
+    hazardTrackingNormal = false
     status("failed")
   }
 
   func sessionWasInterrupted(_ session: ARSession) {
+    hazardGeneration += 1
+    hazardTrackingNormal = false
     status("interrupted")
   }
 
@@ -275,6 +280,13 @@ private final class DepthSensor: NSObject, ARSessionDelegate {
           self.emit?("onDenseScan", scan)
         }
       }
+    }
+    if case .normal = frame.camera.trackingState {
+      hazardTrackingNormal = true
+    } else if hazardTrackingNormal {
+      // Invalidate person world coordinates even during brief relocalization.
+      hazardTrackingNormal = false
+      hazardGeneration += 1
     }
     if hazardEnabled, !hazardPending, frame.timestamp - lastHazardTime >= 0.65,
        case .normal = frame.camera.trackingState {

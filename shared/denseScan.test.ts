@@ -1,6 +1,18 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { decodeDenseScan, fillScanGaps, type ScanFrame } from '../dashboard/denseScan.ts'
+import { decodeDenseScan, fillScanGaps, scanImagePoint, type ScanFrame } from '../dashboard/denseScan.ts'
+
+test('trajectory projection reverses the pitched camera basis and rejects points behind camera', () => {
+  const scan = {
+    width: 2, height: 1, timeMs: 1, intrinsics: [2, 2, 1, 0.5] as const,
+    basis: [1, 0, 0, 0, 0.8, -0.6, 0, 0.6, 0.8], samples: '', cameraColor: false,
+  }
+  // Camera ray [0.5, 0, 2] becomes phone-relative [0.5, 1.2, 1.6].
+  const uv = scanImagePoint(scan, [0.5, 1.2, 1.6])!
+  assert.ok(Math.abs(uv[0] - 0.75) < 1e-6)
+  assert.ok(Math.abs(uv[1] - 0.5) < 1e-6)
+  assert.equal(scanImagePoint(scan, [0, -1.2, -1.6]), undefined)
+})
 
 test('dense scan preserves low-confidence and long-range returns at their original pixels', () => {
   const samples = Buffer.alloc(24)
