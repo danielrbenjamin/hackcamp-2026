@@ -65,15 +65,14 @@ Glass uses the supplied ImageNet and valid-depth p99 transform. The stair previe
 
 ### Person trajectory preview
 
-The native `PersonTrajectory.swift` tracker associates confidence-filtered LiDAR positions in ARKit world coordinates, retains session-local track IDs across short missed detections, and smooths horizontal velocity. Each current detection can publish up to eight measured history points (four seconds) and three constant-velocity predictions at +200, +400 and +600 ms. These are geometric motion estimates, not a trained trajectory model or BoT-SORT. An initial detection has no prediction. Tracks expire after 1.8 seconds without a match and reset after tracking loss, session changes or non-increasing timestamps. No depth means only a 2D detection; unmatched tracks are never emitted as current people.
+The native `PersonTrajectory` tracker in `HazardModels.swift` associates confidence-filtered LiDAR positions in ARKit world coordinates, retains session-local track IDs across short missed detections, and smooths horizontal velocity. Each current detection can publish up to eight measured history points (four seconds) and three constant-velocity predictions at +200, +400 and +600 ms. These are geometric motion estimates, not a trained trajectory model or BoT-SORT. An initial detection has no prediction. Tracks expire after 1.8 seconds without a match and reset after tracking loss, session changes or non-increasing timestamps. No depth means only a 2D detection; unmatched tracks are never emitted as current people.
 
 Rebuild the development app on a Mac using `npm run ios`. Enable **Preview hazard models**, **Share with dashboard** and **Share 3D scan with dashboard**, then select **Model preview → 3D scan overlay**. Solid person trails show recent measurements; dashed orange paths show the 0.6-second forecast in Front and Orbit views. Both trails are transformed into the current model frame; Front uses the scan's intrinsics and camera basis. These diagnostics do not feed belt guidance.
 
-Before demoing, run the standalone tracker checks on a Mac:
+Before demoing, run the tracker checks on a Mac (the native check is skipped on other platforms):
 
 ```sh
-swiftc modules/navigation-depth/ios/PersonTrajectory.swift modules/navigation-depth/tests/PersonTrajectoryCheck.swift -o /tmp/lantern-person-check
-/tmp/lantern-person-check
+node --test shared/modelPreview.test.ts
 ```
 
 Then verify on a LiDAR iPhone: a stationary person while the phone moves, a walking person, two people changing detection order, missing depth, and a tracking interruption. Confirm the initial frame and expired tracks have no forecast. Close crossings and occlusion can still swap IDs; inference cadence and depth noise limit accuracy.

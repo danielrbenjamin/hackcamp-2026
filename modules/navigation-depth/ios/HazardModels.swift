@@ -304,11 +304,11 @@ final class HazardModels {
       let origin = frame.camera.transform.columns.3
       let cameraPosition = SIMD3(origin.x, origin.y, origin.z)
       let sorted = samples.sorted { simd_distance($0, cameraPosition) < simd_distance($1, cameraPosition) }
-      if sorted.count >= 3 {
+      if sorted.count >= 3, let position = relativePoint(sorted[sorted.count / 2], camera: frame.camera) {
         let world = sorted[sorted.count / 2]
         locatedIndices.append(people.count)
         current.append(world)
-        item["position"] = relativePoint(world, camera: frame.camera)
+        item["position"] = position
       }
       people.append(item)
     }
@@ -317,6 +317,7 @@ final class HazardModels {
       guard let track = tracks[index] else { continue }
       people[personIndex]["trackId"] = track.id
       people[personIndex]["history"] = track.history.compactMap { relativePoint($0.position, camera: frame.camera) }
+        .filter { $0.allSatisfy { $0.isFinite && abs($0) <= 10 } }
       let trajectory = track.future.compactMap { relativePoint($0, camera: frame.camera) }
       if let predicted = trajectory.last {
         people[personIndex]["predictedPosition"] = predicted
@@ -344,5 +345,93 @@ final class HazardModels {
       return (CGRect(x: CGFloat(values[0] - values[2] / 2), y: CGFloat(values[1] - values[3] / 2),
                      width: CGFloat(values[2]), height: CGFloat(values[3])), score)
     }
+  }
+}
+
+// Diagnostic tracker; all state is in ARKit world metres on the serial hazard queue.
+final class PersonTrajectory {
+  struct Sample {
+    let time: Double
+    let position: SIMD3<Float>
+  }
+
+  struct Track {
+    let id: Int
+    var position: SIMD3<Float>
+    var velocity = SIMD3<Float>(repeating: 0)
+    var time: Double
+    var observations = 1
+    var history: [Sample]
+
+    var future: [SIMD3<Float>] {
+      guard observations >= 2 else { return [] }
+      return [Float(0.2), 0.4, 0.6].map { position + velocity * $0 }
+    }
+  }
+
+  private var tracks: [Track] = []
+  private var session: Int?
+  private var lastTime = -Double.infinity
+  private var nextID = 1
+  private let maxGap = 1.8
+
+  func update(_ positions: [SIMD3<Float>], time: Double, session: Int) -> [Int: Track] {
+    guard time.isFinite else { tracks.removeAll(); return [:] }
+    if self.session != session || time <= lastTime || time - lastTime > maxGap {
+      tracks.removeAll()
+    }
+    self.session = session
+    lastTime = time
+    tracks.removeAll { time - $0.time > maxGap }
+
+    // Sort all candidate pairs together so confidence ordering cannot steal the
+    // nearest match. Each observation and track can be consumed only once.
+    var pairs: [(distance: Float, track: Int, observation: Int)] = []
+    for (index, track) in tracks.enumerated() {
+      let dt = Float(time - track.time)
+      let expected = track.position + track.velocity * dt
+      for (observation, point) in positions.enumerated() {
+        guard point.x.isFinite, point.y.isFinite, point.z.isFinite else { continue }
+        let distance = simd_distance(expected, point)
+        let displacement = simd_distance(track.position, point)
+        if distance <= min(1.5, 0.4 + 1.5 * dt), displacement <= 0.25 + 3 * dt {
+          pairs.append((distance, index, observation))
+        }
+      }
+    }
+    pairs.sort { $0.distance < $1.distance }
+    var usedTracks = Set<Int>()
+    var result: [Int: Track] = [:]
+    for pair in pairs {
+      guard !usedTracks.contains(pair.track), result[pair.observation] == nil else { continue }
+      var track = tracks[pair.track]
+      let dt = Float(time - track.time)
+      guard dt >= 0.1 else { continue }
+      var measured = (positions[pair.observation] - track.position) / dt
+      measured.y = 0 // Torso depth jitter is not vertical walking velocity.
+      let speed = simd_length(measured)
+      if speed > 3 { measured *= 3 / speed }
+      let weight: Float = track.observations == 1 ? 1 : 0.45
+      track.velocity = track.velocity * (1 - weight) + measured * weight
+      track.position = positions[pair.observation]
+      track.time = time
+      track.observations += 1
+      track.history.append(Sample(time: time, position: track.position))
+      track.history = Array(track.history.filter { time - $0.time <= 4 }.suffix(8))
+      tracks[pair.track] = track
+      usedTracks.insert(pair.track)
+      result[pair.observation] = track
+    }
+    for (index, point) in positions.enumerated() where result[index] == nil {
+      guard point.x.isFinite, point.y.isFinite, point.z.isFinite else { continue }
+      let track = Track(id: nextID, position: point, time: time,
+                        history: [Sample(time: time, position: point)])
+      nextID += 1
+      tracks.append(track)
+      result[index] = track
+    }
+    // Bound retained unmatched tracks. They are never emitted without a current detection.
+    tracks = Array(tracks.sorted { $0.time > $1.time }.prefix(32))
+    return result
   }
 }

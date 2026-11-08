@@ -1,7 +1,25 @@
 import type { Plugin } from 'vite'
-import { MAX_DEPTH_POINTS, MAX_DEPTH_PREVIEW_DIMENSION, MAX_SCAN_PIXELS, type DenseScan, type DepthPreview } from '../shared/contracts.ts'
+import { MAX_DEPTH_POINTS, MAX_DEPTH_PREVIEW_DIMENSION, MAX_SCAN_PIXELS, type DenseScan, type DepthPreview, type ModelPreview } from '../shared/contracts.ts'
 import { validHazards } from '../shared/hazards.ts'
-import { validPersonPreview } from '../shared/personPreview.ts'
+
+export function validPersonPreview(value: unknown): value is ModelPreview['people'][number] {
+  if (!value || typeof value !== 'object') return false
+  const person = value as ModelPreview['people'][number]
+  const point = (value: unknown) => Array.isArray(value) && value.length === 3 &&
+    value.every(n => Number.isFinite(n) && Math.abs(n) <= 10)
+  return Array.isArray(person.box) && person.box.length === 4 &&
+    person.box.every(n => Number.isFinite(n) && n >= 0 && n <= 1) &&
+    Number.isFinite(person.confidence) && person.confidence >= 0 && person.confidence <= 1 &&
+    (person.position === undefined || point(person.position)) &&
+    (person.predictedPosition === undefined || (point(person.position) && point(person.predictedPosition))) &&
+    (person.trackId === undefined || (Number.isSafeInteger(person.trackId) && person.trackId > 0 && point(person.position))) &&
+    (person.history === undefined || (point(person.position) && Array.isArray(person.history) &&
+      person.history.length > 0 && person.history.length <= 8 && person.history.every(point))) &&
+    (person.trajectory === undefined || (point(person.position) && Array.isArray(person.trajectory) &&
+      person.trajectory.length === 3 && person.trajectory.every(point) && person.predictionHorizonMs === 600)) &&
+    (person.predictionHorizonMs === undefined || (person.predictionHorizonMs === 600 && person.trajectory !== undefined))
+}
+
 function validDenseScan(value: unknown) {
   if (value === undefined) return true
   if (!value || typeof value !== 'object') return false

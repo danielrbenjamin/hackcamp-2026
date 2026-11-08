@@ -308,7 +308,6 @@ private final class DepthSensor: NSObject, ARSessionDelegate {
             self.emit?("onHazardPreviewStatus", ["message": message])
           }
         }, partial: { result in
-          guard reportProgress else { return }
           var frame = result
           frame["depthPreview"] = backdrop
           frame["denseScan"] = scan
