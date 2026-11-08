@@ -326,6 +326,33 @@ final class HazardModels {
 
   private func mask(_ output: MLMultiArray, kind: String, size: Int, depth: DepthSamples,
                     camera: ARCamera, rotation: ImageRotation) -> [String: Any] {
+    let strides = output.strides.map(\.intValue)
+    func offset(_ channel: Int, _ row: Int, _ col: Int) -> Int {
+      channel * strides[1] + row * strides[2] + col * strides[3]
+    }
+    if output.dataType == .float32 {
+      return output.withUnsafeBufferPointer(ofType: Float.self) { values in
+        mask(kind: kind, size: size, depth: depth, camera: camera, rotation: rotation) {
+          values[offset($0, $1, $2)]
+        }
+      }
+    }
+    #if arch(arm64)
+    if output.dataType == .float16 {
+      return output.withUnsafeBufferPointer(ofType: Float16.self) { values in
+        mask(kind: kind, size: size, depth: depth, camera: camera, rotation: rotation) {
+          Float(values[offset($0, $1, $2)])
+        }
+      }
+    }
+    #endif
+    return mask(kind: kind, size: size, depth: depth, camera: camera, rotation: rotation) { channel, row, col in
+      output[[0, NSNumber(value: channel), NSNumber(value: row), NSNumber(value: col)]].floatValue
+    }
+  }
+
+  private func mask(kind: String, size: Int, depth: DepthSamples, camera: ARCamera,
+                    rotation: ImageRotation, logit: (Int, Int, Int) -> Float) -> [String: Any] {
     let previewSize = size
     let pointStep = (previewSize + 23) / 24
     let fit = kind == "stairs" ? rotation.fit(width: Int(camera.imageResolution.width), height: Int(camera.imageResolution.height))
@@ -336,12 +363,6 @@ final class HazardModels {
     var probabilities: [Float] = [0, 0]
     var guidance: [ModelHazardSample] = []
     let k = camera.intrinsics
-    let strides = output.strides.map(\.intValue)
-    let floats = output.dataType == .float32 ? output.dataPointer.assumingMemoryBound(to: Float.self) : nil
-    func logit(_ channel: Int, _ row: Int, _ col: Int) -> Float {
-      if let floats { return floats[channel * strides[1] + row * strides[2] + col * strides[3]] }
-      return output[[0, NSNumber(value: channel), NSNumber(value: row), NSNumber(value: col)]].floatValue
-    }
     func sampleCenter(_ index: Int) -> Float { (Float(index) + 0.5) / Float(previewSize) }
     func modelIndex(_ value: Float, scale: Float) -> Int {
       Int(((value - 0.5) * scale + 0.5) * Float(size))
