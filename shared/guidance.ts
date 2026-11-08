@@ -18,9 +18,13 @@ function validClearance(value: number | null): value is number {
   return value !== null && Number.isFinite(value) && value > 0
 }
 
-export function reflex(observation: Observation, now: number): Telemetry['reflex'] {
+function freshObservation(observation: Observation, now: number): boolean {
   const age = now - observation.timeMs
-  if (!Number.isFinite(age) || age < 0 || age > MAX_AGE_MS) return 'unknown'
+  return Number.isFinite(age) && age >= 0 && age <= MAX_AGE_MS
+}
+
+export function reflex(observation: Observation, now: number): Telemetry['reflex'] {
+  if (!freshObservation(observation, now)) return 'unknown'
   const forward = observation.zones.slice(1, 4)
   if (forward.some(value => validClearance(value) && value < 0.85)) return 'obstacle'
   return forward.every(validClearance) ? 'clear' : 'unknown'
@@ -79,15 +83,17 @@ export function createLoop(providers: Providers, allowNativeGuidance = false) {
       const eligible = hazard === 'clear' &&
         (observation.source === 'simulated' || (allowNativeGuidance && route.source === 'google'))
       const detections = observation.hazards
+      const modelWarning = hazard !== 'obstacle' && freshObservation(observation, time) && validHazards(detections)
+        ? detections.find(detection => blocksCorridor(detection, 0))?.kind : undefined
       const blockedHeadings = hazard !== 'clear' || detections === undefined ? []
         : validHazards(detections) ? HEADINGS.filter(heading => detections.some(detection => blocksCorridor(detection, heading)))
         : HEADINGS
       const baselineHeading = eligible ? selectHeading(observation, route, previousBaseline) : null
-      const heading = eligible ? selectHeading(observation, route, previous, blockedHeadings) : null
+      const heading = eligible && !modelWarning ? selectHeading(observation, route, previous, blockedHeadings) : null
       previous = heading
       previousBaseline = baselineHeading
       let command = IDLE
-      if (hazard === 'obstacle') command = OBSTACLE
+      if (hazard === 'obstacle' || modelWarning) command = OBSTACLE
       else if (hazard === 'unknown') command = UNAVAILABLE
       else if (heading !== null) {
         const motors: [number, number, number, number, number] = [0, 0, 0, 0, 0]
@@ -107,7 +113,7 @@ export function createLoop(providers: Providers, allowNativeGuidance = false) {
       if (!belt.connected) previousCommand = undefined
 
       return { schemaVersion: 1, observation, prediction: null, route, belt, command, heading, baselineHeading, blockedHeadings,
-        reflex: hazard, reflexDispatchMs }
+        reflex: hazard, reflexDispatchMs, modelWarning }
     },
     stop() {
       active = false

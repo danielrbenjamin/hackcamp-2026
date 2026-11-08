@@ -5,14 +5,18 @@ import { createMock, emptyObservation } from './mock.ts'
 
 test('reflex overrides guidance even with a model hazard in the same frame', () => {
   const mock = createMock()
+  let glassAhead = false
   const loop = createLoop({ ...mock.providers, lidar: () => ({ ...mock.providers.lidar(),
-    hazards: [{ kind: 'glass', confidence: 0.9, bearing: [80, 90] }] }) })
+    hazards: [{ kind: 'glass', confidence: 0.9, bearing: glassAhead ? [-5, 5] : [80, 90] }] }) })
   assert.equal(loop.tick().command.cue, 'direction')
+  glassAhead = true
   mock.setScenario('obstacle')
   const warning = loop.tick()
   assert.equal(warning.heading, null)
+  assert.equal(warning.modelWarning, undefined)
   assert.deepEqual(mock.lastCommand(), { cue: 'obstacle', motors: [1, 1, 1, 1, 1] })
   mock.setScenario('dropout')
+  glassAhead = false
   assert.equal(loop.tick().command.cue, 'unavailable')
   assert.deepEqual(mock.lastCommand()?.motors, [0, 0, 0, 0, 0])
 })
@@ -46,17 +50,37 @@ test('stairs block forward and a predicted pedestrian crossing blocks forward be
     assert.ok(frame.blockedHeadings?.includes(0))
     assert.notEqual(frame.heading, 0)
     assert.equal(frame.reflex, 'clear')
+    assert.equal(frame.command.cue, 'obstacle')
+    assert.equal(frame.modelWarning, scenario)
   }
 })
 
-test('unlocated glass suppresses overlapping direction cues without triggering the depth reflex', () => {
+test('unlocated glass warns and suppresses overlapping direction cues independently of the depth reflex', () => {
   const mock = createMock()
   mock.setScenario('glass')
   const frame = createLoop(mock.providers).tick()
   assert.equal(frame.blockedHeadings?.length, 9)
   assert.equal(frame.heading, null)
-  assert.equal(frame.command.cue, 'idle')
+  assert.equal(frame.command.cue, 'obstacle')
+  assert.equal(frame.modelWarning, 'glass')
   assert.equal(frame.reflex, 'clear')
+})
+
+test('a fresh native glass bearing warns with unknown depth and no route, but expires with the observation', () => {
+  const { providers } = createMock()
+  const now = 1000
+  const loop = createLoop({
+    ...providers,
+    lidar: () => ({ ...emptyObservation(), source: 'arkit', timeMs: now,
+      hazards: [{ kind: 'glass', confidence: 0.9, bearing: [-5, 5] }] }),
+    navigation: () => ({ ...providers.navigation(), status: 'idle', desiredHeading: null }),
+  })
+  const fresh = loop.tick(now + 10)
+  assert.equal(fresh.reflex, 'unknown')
+  assert.equal(fresh.command.cue, 'obstacle')
+  assert.equal(fresh.modelWarning, 'glass')
+  assert.equal(fresh.reflexDispatchMs, undefined)
+  assert.equal(loop.tick(now + 601).command.cue, 'unavailable')
 })
 
 test('reconnection replays the current warning rather than the old direction', () => {

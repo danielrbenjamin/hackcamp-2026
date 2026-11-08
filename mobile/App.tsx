@@ -183,17 +183,21 @@ export default function App() {
   }, [streaming, native, sharePoints])
 
   useEffect(() => {
+    if (!native || !nativeDepth?.previewHazards) return
+    nativeDepth.previewHazards(true)
+    return () => nativeDepth?.previewHazards?.(false)
+  }, [native])
+
+  useEffect(() => {
     if (!native || !previewModels || !nativeDepth?.previewHazards) return
     const listener = nativeDepth.addListener('onHazardPreview', preview => {
       latestModelPreview.current = preview
       setModelPreview(preview)
     })
     const progress = nativeDepth.addListener('onHazardPreviewStatus', event => setModelProgress(event.message))
-    nativeDepth.previewHazards(true)
     return () => {
       listener.remove()
       progress.remove()
-      nativeDepth?.previewHazards?.(false)
       latestModelPreview.current = undefined
       setModelPreview(undefined)
       setModelProgress('')
@@ -305,7 +309,10 @@ export default function App() {
     : beltState === 'connected' ? 'Connected' : beltState === 'unavailable' ? 'Bluetooth or belt unavailable' : 'Disconnected'
   const hazardHold = frame?.heading === null && frame.baselineHeading != null &&
     frame.blockedHeadings?.includes(frame.baselineHeading)
-  const warning = cue === 'obstacle' ? 'Stop. Obstacle ahead.'
+  const modelWarning = frame?.modelWarning
+  const warning = cue === 'obstacle' ? modelWarning === 'stairs' ? 'Stop. Possible stairs ahead.'
+    : modelWarning === 'glass' ? 'Stop. Possible glass ahead.'
+      : modelWarning === 'person' ? 'Stop. Person in your path.' : 'Stop. Obstacle ahead.'
     : hazardHold ? 'Caution. A hazard blocks guidance.'
     : cue === 'unavailable' ? 'LiDAR cannot verify clearance.' : null
   const motor = frame?.command.motors.findIndex(strength => strength > 0) ?? -1
@@ -409,7 +416,7 @@ export default function App() {
         </View>)}
         {native && <>
           {nativeDepth?.previewHazards && <SettingSwitch label="Preview hazard models"
-            hint="Shows model results for testing. Guidance still uses LiDAR clearance."
+            hint="Shows model details and enables preview sharing."
             value={previewModels} onChange={setPreviewModels} />}
           {previewModels && nativeDepth?.previewHazards && <Text style={styles.muted}>{modelPreview
             ? `Glass: ${modelPreview.models.glass}. Stairs: ${modelPreview.models.stairs}. People: ${modelPreview.models.person}.`

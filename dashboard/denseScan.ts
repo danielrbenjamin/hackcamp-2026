@@ -1,5 +1,17 @@
 import type { DenseScan, DepthPoint } from '../shared/contracts'
 
+// Inverse of the camera-to-phone basis used to reconstruct scan returns.
+export function scanImagePoint(scan: DenseScan, point: DepthPoint): [number, number] | undefined {
+  const [right, up, forward] = point
+  const [xx, xy, xz, yx, yy, yz, zx, zy, zz] = scan.basis
+  const x = xx * right + xy * up + xz * forward
+  const y = yx * right + yy * up + yz * forward
+  const z = zx * right + zy * up + zz * forward
+  if (!Number.isFinite(z) || z < 0.08) return undefined
+  const [fx, fy, cx, cy] = scan.intrinsics
+  return [(fx * x / z + cx) / scan.width, (cy - fy * y / z) / scan.height]
+}
+
 export function decodeDenseScan(scan: DenseScan) {
   const decoded = atob(scan.samples)
   const bytes = Uint8Array.from(decoded, value => value.charCodeAt(0))

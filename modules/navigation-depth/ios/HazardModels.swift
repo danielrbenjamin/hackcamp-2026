@@ -94,7 +94,7 @@ private struct DepthSamples {
   }
 }
 
-private func relativePoint(_ world: SIMD3<Float>, camera: ARCamera) -> [Float]? {
+func relativePoint(_ world: SIMD3<Float>, camera: ARCamera) -> [Float]? {
   let pose = camera.transform
   let forward = SIMD2(-pose.columns.2.x, -pose.columns.2.z)
   guard simd_length(forward) > 0.4 else { return nil }
@@ -105,13 +105,17 @@ private func relativePoint(_ world: SIMD3<Float>, camera: ARCamera) -> [Float]? 
   return [simd_dot(ground, right), offset.y, simd_dot(ground, heading)]
 }
 
+struct ModelHazardSample {
+  let confidence: Float
+  let world: SIMD3<Float>
+  var predicted: SIMD3<Float>? = nil
+}
+
 final class HazardModels {
   private var models: [String: MLModel] = [:]
   private var unavailable: [String: String] = [:]
   private var personModel: VNCoreMLModel?
-  private var previousPeople: [(id: String, world: SIMD3<Float>)] = []
-  private var previousTime = -Double.infinity
-  private var previousSession = -1
+  private let personTrajectory = PersonTrajectory()
 
   private func model(_ name: String) throws -> MLModel {
     if let cached = models[name] { return cached }
@@ -212,7 +216,7 @@ final class HazardModels {
       return (uv - center) / fit + center
     }
     let inside = pixels.map { $0.x >= 0 && $0.x < 1 && $0.y >= 0 && $0.y < 1 }
-    guard let rgb = sampleCameraRGB(image, pixels: pixels, bilinear: stairs) else { throw ModelError.noDepth }
+    guard let rgb = sampleCameraRGB(image, pixels: pixels, bilinear: true) else { throw ModelError.noDepth }
     let raw = pixels.enumerated().map { index, uv in
       if let stairDepth { return inside[index] ? depth.bilinear(uv, values: stairDepth) : 0 }
       return depth.depths[depth.index(uv)]
@@ -240,11 +244,11 @@ final class HazardModels {
       let value = raw[i]
       let isValid = value.isFinite && value > 0
       if stairs {
-        // Match the final StairDataset transform in databricks/ml.py.
+        // Match the final StairDataset transform in databricks/stairs.py.
         let clipped = max(p01, min(p99, value))
         values[3 * count + i] = ((clipped - p01) / stairRange - 0.5) / 0.25
       } else {
-        values[3 * count + i] = isValid ? min(1, value / p99) : 0
+        values[3 * count + i] = isValid ? min(1, value / max(p99, 1e-6)) : 0
       }
       if channels == 5 { values[4 * count + i] = isValid ? 1 : 0 }
     }
@@ -252,13 +256,16 @@ final class HazardModels {
   }
 
   private func mask(_ output: MLMultiArray, kind: String, size: Int, depth: DepthSamples, camera: ARCamera) -> [String: Any] {
-    let previewSize = 96
+    let previewSize = size
+    let pointStep = (previewSize + 23) / 24
     let fit = kind == "stairs" ? squareFit(width: Int(camera.imageResolution.width), height: Int(camera.imageResolution.height))
       : SIMD2<Float>(repeating: 1)
     let center = SIMD2<Float>(repeating: 0.5)
     var labels = Data()
     var points: [[Float]] = []
     var probabilities: [Float] = [0, 0]
+    var guidance: [ModelHazardSample] = []
+    let k = camera.intrinsics
     for y in 0..<previewSize {
       for x in 0..<previewSize {
         let uv = SIMD2((Float(x) + 0.5) / Float(previewSize), (Float(y) + 0.5) / Float(previewSize))
@@ -267,10 +274,14 @@ final class HazardModels {
         let col = NSNumber(value: Int(modelUV.x * Float(size)))
         let first = output[[0, 0, row, col]].floatValue
         var label: UInt8 = 0
+        var confidence: Float = 0
         if kind == "glass" {
           // A logit of zero is the sigmoid threshold of 0.5.
           if first.isFinite && first >= 0 { label = 1 }
-          if first.isFinite { probabilities[0] = max(probabilities[0], 1 / (1 + exp(-first))) }
+          if first.isFinite {
+            confidence = 1 / (1 + exp(-first))
+            probabilities[0] = max(probabilities[0], confidence)
+          }
         } else {
           let riser = output[[0, 1, row, col]].floatValue
           let tread = output[[0, 2, row, col]].floatValue
@@ -281,17 +292,28 @@ final class HazardModels {
             let total = exp(first - peak) + r + t
             probabilities[0] = max(probabilities[0], r / total)
             probabilities[1] = max(probabilities[1], t / total)
+            confidence = label == 1 ? r / total : t / total
           }
         }
         labels.append(label)
-        if label != 0, x % 4 == 0, y % 4 == 0, points.count < 576,
-           let world = depth.worldPoint(uv, camera: camera), let point = relativePoint(world, camera: camera) {
-          points.append(point)
+        if label != 0, x % pointStep == 0, y % pointStep == 0 {
+          let world = depth.worldPoint(uv, camera: camera)
+          if let world, let point = relativePoint(world, camera: camera) { points.append(point) }
+          if confidence >= 0.7 {
+            if kind == "glass" {
+              let u = uv.x * Float(camera.imageResolution.width)
+              let v = uv.y * Float(camera.imageResolution.height)
+              let ray = camera.transform * SIMD4((u - k[2][0]) / k[0][0], -(v - k[2][1]) / k[1][1], -1, 0)
+              guidance.append(ModelHazardSample(confidence: confidence, world: SIMD3(ray.x, ray.y, ray.z)))
+            } else if let world {
+              guidance.append(ModelHazardSample(confidence: confidence, world: world))
+            }
+          }
         }
       }
     }
     return ["kind": kind, "size": previewSize, "labels": labels.base64EncodedString(), "points": points,
-            "probabilities": probabilities]
+            "probabilities": probabilities, "guidance": guidance.count >= 4 ? guidance : []]
   }
 
   private func detectPeople(_ frame: ARFrame, depth: DepthSamples?, session: Int) throws -> [[String: Any]] {
@@ -312,12 +334,12 @@ final class HazardModels {
     } else {
       candidates = try personFeatures(results)
     }
-    let dt = frame.timestamp - previousTime
-    var unused = previousSession == session && dt > 0 && dt < 1.8 ? previousPeople : []
-    var current: [(id: String, world: SIMD3<Float>)] = []
-    let people: [[String: Any]] = candidates.sorted { $0.1 > $1.1 }.prefix(16).compactMap { candidate, confidence in
+    var current: [SIMD3<Float>] = []
+    var locatedIndices: [Int] = []
+    var people: [[String: Any]] = []
+    for (candidate, confidence) in candidates.sorted(by: { $0.1 > $1.1 }).prefix(16) {
       let box = candidate.intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
-      guard !box.isNull, !box.isEmpty else { return nil }
+      guard !box.isNull, !box.isEmpty else { continue }
       var item: [String: Any] = ["box": [box.minX, box.minY, box.width, box.height], "confidence": confidence]
       let columns: [CGFloat] = [0.35, 0.5, 0.65]
       let rows: [CGFloat] = [0.4, 0.55, 0.7]
@@ -327,26 +349,33 @@ final class HazardModels {
       let origin = frame.camera.transform.columns.3
       let cameraPosition = SIMD3(origin.x, origin.y, origin.z)
       let sorted = samples.sorted { simd_distance($0, cameraPosition) < simd_distance($1, cameraPosition) }
-      if sorted.count >= 3 {
+      if sorted.count >= 3, let position = relativePoint(sorted[sorted.count / 2], camera: frame.camera) {
         let world = sorted[sorted.count / 2]
-        var trackID = UUID().uuidString
-        item["position"] = relativePoint(world, camera: frame.camera)
-        if let index = unused.indices.min(by: { simd_distance(unused[$0].world, world) < simd_distance(unused[$1].world, world) }),
-           simd_distance(unused[index].world, world) <= Float(dt) * 2 {
-          let previous = unused.remove(at: index)
-          trackID = previous.id
-          let predicted = world + (world - previous.world) * Float(0.6 / dt)
-          item["predictedPosition"] = relativePoint(predicted, camera: frame.camera)
-        }
-        current.append((trackID, world))
-        item["track_id"] = trackID
-        item["world"] = [world.x, world.y, world.z]
+        locatedIndices.append(people.count)
+        current.append(world)
+        item["position"] = position
       }
-      return item
+      people.append(item)
     }
-    previousSession = session
-    previousTime = frame.timestamp
-    previousPeople = current
+    let tracks = personTrajectory.update(current, time: frame.timestamp, session: session)
+    for (index, personIndex) in locatedIndices.enumerated() {
+      guard let track = tracks[index] else { continue }
+      people[personIndex]["trackId"] = track.id
+      people[personIndex]["track_id"] = String(track.id)
+      people[personIndex]["world"] = [track.position.x, track.position.y, track.position.z]
+      if let confidence = people[personIndex]["confidence"] as? Float, confidence >= 0.55 {
+        people[personIndex]["guidance"] = ModelHazardSample(confidence: confidence, world: track.position,
+                                                          predicted: track.future.last)
+      }
+      people[personIndex]["history"] = track.history.compactMap { relativePoint($0.position, camera: frame.camera) }
+        .filter { $0.allSatisfy { $0.isFinite && abs($0) <= 10 } }
+      let trajectory = track.future.compactMap { relativePoint($0, camera: frame.camera) }
+      if let predicted = trajectory.last {
+        people[personIndex]["predictedPosition"] = predicted
+        people[personIndex]["trajectory"] = trajectory
+        people[personIndex]["predictionHorizonMs"] = 600
+      }
+    }
     return people
   }
 
@@ -367,5 +396,93 @@ final class HazardModels {
       return (CGRect(x: CGFloat(values[0] - values[2] / 2), y: CGFloat(values[1] - values[3] / 2),
                      width: CGFloat(values[2]), height: CGFloat(values[3])), score)
     }
+  }
+}
+
+// Diagnostic tracker; all state is in ARKit world metres on the serial hazard queue.
+final class PersonTrajectory {
+  struct Sample {
+    let time: Double
+    let position: SIMD3<Float>
+  }
+
+  struct Track {
+    let id: Int
+    var position: SIMD3<Float>
+    var velocity = SIMD3<Float>(repeating: 0)
+    var time: Double
+    var observations = 1
+    var history: [Sample]
+
+    var future: [SIMD3<Float>] {
+      guard observations >= 2 else { return [] }
+      return [Float(0.2), 0.4, 0.6].map { position + velocity * $0 }
+    }
+  }
+
+  private var tracks: [Track] = []
+  private var session: Int?
+  private var lastTime = -Double.infinity
+  private var nextID = 1
+  private let maxGap = 1.8
+
+  func update(_ positions: [SIMD3<Float>], time: Double, session: Int) -> [Int: Track] {
+    guard time.isFinite else { tracks.removeAll(); return [:] }
+    if self.session != session || time <= lastTime || time - lastTime > maxGap {
+      tracks.removeAll()
+    }
+    self.session = session
+    lastTime = time
+    tracks.removeAll { time - $0.time > maxGap }
+
+    // Sort all candidate pairs together so confidence ordering cannot steal the
+    // nearest match. Each observation and track can be consumed only once.
+    var pairs: [(distance: Float, track: Int, observation: Int)] = []
+    for (index, track) in tracks.enumerated() {
+      let dt = Float(time - track.time)
+      let expected = track.position + track.velocity * dt
+      for (observation, point) in positions.enumerated() {
+        guard point.x.isFinite, point.y.isFinite, point.z.isFinite else { continue }
+        let distance = simd_distance(expected, point)
+        let displacement = simd_distance(track.position, point)
+        if distance <= min(1.5, 0.4 + 1.5 * dt), displacement <= 0.25 + 3 * dt {
+          pairs.append((distance, index, observation))
+        }
+      }
+    }
+    pairs.sort { $0.distance < $1.distance }
+    var usedTracks = Set<Int>()
+    var result: [Int: Track] = [:]
+    for pair in pairs {
+      guard !usedTracks.contains(pair.track), result[pair.observation] == nil else { continue }
+      var track = tracks[pair.track]
+      let dt = Float(time - track.time)
+      guard dt >= 0.1 else { continue }
+      var measured = (positions[pair.observation] - track.position) / dt
+      measured.y = 0 // Torso depth jitter is not vertical walking velocity.
+      let speed = simd_length(measured)
+      if speed > 3 { measured *= 3 / speed }
+      let weight: Float = track.observations == 1 ? 1 : 0.45
+      track.velocity = track.velocity * (1 - weight) + measured * weight
+      track.position = positions[pair.observation]
+      track.time = time
+      track.observations += 1
+      track.history.append(Sample(time: time, position: track.position))
+      track.history = Array(track.history.filter { time - $0.time <= 4 }.suffix(8))
+      tracks[pair.track] = track
+      usedTracks.insert(pair.track)
+      result[pair.observation] = track
+    }
+    for (index, point) in positions.enumerated() where result[index] == nil {
+      guard point.x.isFinite, point.y.isFinite, point.z.isFinite else { continue }
+      let track = Track(id: nextID, position: point, time: time,
+                        history: [Sample(time: time, position: point)])
+      nextID += 1
+      tracks.append(track)
+      result[index] = track
+    }
+    // Bound retained unmatched tracks. They are never emitted without a current detection.
+    tracks = Array(tracks.sorted { $0.time > $1.time }.prefix(32))
+    return result
   }
 }

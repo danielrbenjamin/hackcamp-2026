@@ -73,7 +73,8 @@ function Dashboard() {
   }, [token])
 
   const frame = token ? phone : simulation
-  const eventText = frame ? `${cueLabels[frame.command.cue]} · ${frame.belt.connected ? 'belt online' : 'belt offline'}` : null
+  const cueLabel = frame?.modelWarning ? HAZARD_LABELS[frame.modelWarning] : frame ? cueLabels[frame.command.cue] : undefined
+  const eventText = frame ? `${cueLabel} · ${frame.belt.connected ? 'belt online' : 'belt offline'}` : null
   const eventTime = frame?.observation.timeMs
   useEffect(() => {
     if (!eventText || !eventTime) return
@@ -214,8 +215,8 @@ function Dashboard() {
           </div>
           <section className="inspector-section" data-current={inspection === 'guidance'}>
             <h3>Guidance</h3>
-            <div className={`decision ${hazardHold || (reflex && reflex !== 'clear') ? 'hazard' : ''}`}>
-              <strong>{hazardHold ? 'Caution · direction withheld' : command ? cueLabels[command.cue] : 'No telemetry'}</strong><span>{heading === null ? '—' : `${heading}°`}</span>
+            <div className={`decision ${command?.cue === 'obstacle' || hazardHold || (reflex && reflex !== 'clear') ? 'hazard' : ''}`}>
+              <strong>{command?.cue !== 'obstacle' && hazardHold ? 'Caution · direction withheld' : cueLabel ?? 'No telemetry'}</strong><span>{heading === null ? '—' : `${heading}°`}</span>
             </div>
             <dl className="readouts">
               <div><dt>Route</dt><dd>{route ? `${route.source === 'google' ? 'Google' : 'Simulated'} / ${route.status}` : '—'}</dd></div>

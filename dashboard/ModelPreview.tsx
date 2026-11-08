@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ModelPreview as Preview } from '../shared/contracts'
 import { PointCloud } from './PointCloud'
+import { glassBearing } from './modelColors'
 
 const glass = [84, 203, 237]
 const riser = [248, 166, 96]
@@ -103,6 +104,8 @@ export function ModelPreview({ preview }: { preview?: Preview }) {
   const width = depth?.width ?? preview.denseScan?.width ?? 128
   const height = depth?.height ?? preview.denseScan?.height ?? 96
   const alignedScan = !!preview.denseScan || !!preview.scan?.imageCoordinates
+  const matchingScan = preview.denseScan?.timeMs === preview.timeMs ? preview.denseScan : undefined
+  const bearing = matchingScan ? glassBearing(matchingScan, preview.masks) : undefined
   const unlocated = preview.people.filter(person => !person.position || person.position[2] < 0.08).length
   return <>
     <div className="model-preview-toolbar">
@@ -111,10 +114,14 @@ export function ModelPreview({ preview }: { preview?: Preview }) {
         <button aria-pressed={view === 'separate'} onClick={() => setView('separate')}>Individual models</button>
         <button aria-pressed={view === 'scan'} onClick={() => setView('scan')}>3D scan overlay</button>
       </div>
-      <span className="model-latency">{Math.round(preview.latencyMs)} ms · {preview.partial ? 'Partial preview' : 'Preview only'}</span>
+      <span className="model-latency">{Math.round(preview.latencyMs)} ms{preview.partial ? ' · Partial results' : ''}</span>
     </div>
+    {bearing && <div className="legend">
+      <span>Possible glass {bearing.left.toFixed(0)}° to {bearing.right.toFixed(0)}° relative to the phone. Distance unknown.</span>
+    </div>}
     {view === 'scan' ? (preview.scan || preview.denseScan) ? <>
       <PointCloud points={preview.scan?.points} pointColors={preview.scan?.pointColors} denseScan={preview.denseScan} overlayPoints={overlays}
+        modelMasks={matchingScan ? preview.masks : undefined}
         people={preview.people} imageAspect={depth ? width / height : undefined} heading={null} phone
         cameraOverlay={alignedScan ? {
           coordinates: preview.scan?.imageCoordinates,
@@ -125,7 +132,10 @@ export function ModelPreview({ preview }: { preview?: Preview }) {
         colorLabel={(preview.denseScan?.cameraColor || preview.scan?.pointColors) ? 'Camera color with model detections' : 'Height colors with model detections'} />
       <div className="legend">
         <ModelKey />
-        {alignedScan && <span>Front shows masks and boxes. Orbit shows depth-projected returns.</span>}
+        {alignedScan && <span>Front shows full masks and boxes. Orbit labels measured depth returns.</span>}
+        {bearing && <span>Depth inside a glass mask can come from behind the glass.</span>}
+        {preview.people.some(person => person.history || person.trajectory) &&
+          <span>Solid trails show measured motion. Dashed trails show the 0.6-second forecast.</span>}
         {!alignedScan && <span>Rebuild Lantern for aligned masks and boxes in Front view.</span>}
         {unlocated > 0 && <span>{unlocated} person {unlocated === 1 ? 'box is' : 'boxes are'} available only in 2D.</span>}
       </div>

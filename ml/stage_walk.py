@@ -49,7 +49,14 @@ def stage_walk(archive, volume=VOLUME):
                 raise ValueError(f"Invalid depth dimensions in frame {index}")
             if paths[1] not in names or bundle.getinfo(paths[1]).file_size != width * height * 4:
                 raise ValueError(f"Invalid depth byte count in frame {index}")
-            for path, size in ((paths[2], width * height), (paths[3], 96 ** 2), (paths[4], 96 ** 2)):
+            rasters = [(paths[2], width * height)]
+            for path, field, native_size in ((paths[3], "glass_mask_size", 224), (paths[4], "stair_mask_size", 384)):
+                if path in expected:
+                    size = row.get(field, 96)
+                    if type(size) is not int or size not in (96, native_size):
+                        raise ValueError(f"Invalid mask size for {path}")
+                    rasters.append((path, size ** 2))
+            for path, size in rasters:
                 if path in expected and (path not in names or bundle.getinfo(path).file_size != size):
                     raise ValueError(f"Invalid raster byte count for {path}")
         if expected != names:

@@ -130,7 +130,8 @@ private final class DepthSensor: NSObject, ARSessionDelegate {
   private var walk: WalkRecording?
   private var walkCount = 0
   private var worldEpoch = 0
-  private var relocalizing = false
+  private var hazardTrackingNormal = false
+  private var modelHazards: [String: (time: Double, origin: SIMD3<Float>, samples: [ModelHazardSample])] = [:]
   private var recentHits: [(time: TimeInterval, points: [SIMD2<Float>])] = []
   var recording = false
   private var previewing = false
@@ -161,6 +162,7 @@ private final class DepthSensor: NSObject, ARSessionDelegate {
   func setHazardPreview(_ enabled: Bool) {
     hazardEnabled = enabled
     hazardGeneration += 1
+    modelHazards.removeAll()
     lastHazardTime = -Double.infinity
     firstHazardPreview = true
     if enabled { emit?("onHazardPreviewStatus", ["message": "Waiting for ARKit tracking"]) }
@@ -212,8 +214,9 @@ private final class DepthSensor: NSObject, ARSessionDelegate {
     scanOrigin = nil
     scanSession = UUID().uuidString
     hazardGeneration += 1
+    modelHazards.removeAll()
     worldEpoch += 1
-    relocalizing = false
+    hazardTrackingNormal = false
     lastHazardTime = -Double.infinity
     firstHazardPreview = true
     recentHits.removeAll()
@@ -226,10 +229,12 @@ private final class DepthSensor: NSObject, ARSessionDelegate {
   }
 
   func session(_ session: ARSession, didFailWithError error: Error) {
+    resetPersonTracking()
     status("failed")
   }
 
   func sessionWasInterrupted(_ session: ARSession) {
+    resetPersonTracking()
     status("interrupted")
   }
 
@@ -271,6 +276,9 @@ private final class DepthSensor: NSObject, ARSessionDelegate {
     }
     payload["zones"] = zones
     payload["grid"] = ["width": 40, "height": 20, "cellM": 0.25, "cells": cells] as [String: Any]
+    if case .normal = frame.camera.trackingState, let hazards = guidanceHazards(frame) {
+      payload["hazards"] = hazards
+    }
     emit("onObservation", payload)
     if case .limited(.relocalizing) = frame.camera.trackingState, scanOrigin != nil {
       scanOrigin = nil
@@ -303,10 +311,11 @@ private final class DepthSensor: NSObject, ARSessionDelegate {
         }
       }
     }
-    if case .limited(.relocalizing) = frame.camera.trackingState {
-      if !relocalizing { worldEpoch += 1; hazardGeneration += 1 }
-      relocalizing = true
-    } else { relocalizing = false }
+    if case .normal = frame.camera.trackingState {
+      hazardTrackingNormal = true
+    } else if hazardTrackingNormal {
+      resetPersonTracking()
+    }
     let capture = walkCount < WalkRecording.limit && frame.sceneDepth != nil ? walk : nil
     if hazardEnabled || capture != nil, !hazardPending,
        frame.timestamp - lastHazardTime >= (capture == nil ? 0.65 : 1),
@@ -316,6 +325,8 @@ private final class DepthSensor: NSObject, ARSessionDelegate {
       let generation = hazardGeneration
       let run = runID
       let epoch = worldEpoch
+      let framePose = frame.camera.transform
+      let frameTime = frame.timestamp
       let reportProgress = hazardEnabled && firstHazardPreview
       let shareScan = hazardEnabled && previewing
       let scanRun = scanGeneration
@@ -330,13 +341,14 @@ private final class DepthSensor: NSObject, ARSessionDelegate {
             self.emit?("onHazardPreviewStatus", ["message": message])
           }
         }, partial: { result in
-          guard reportProgress else { return }
           var frame = result
           frame["depthPreview"] = backdrop
           frame["denseScan"] = scan
           let preview = Self.publicPreview(frame)
           DispatchQueue.main.async { [weak self] in
             guard let self, self.runID == run, self.hazardEnabled, self.hazardGeneration == generation else { return }
+            self.updateModelHazards(result, frame: framePose, time: frameTime)
+            guard reportProgress else { return }
             var payload = preview
             if self.scanGeneration != scanRun { payload.removeValue(forKey: "denseScan"); payload.removeValue(forKey: "depthPreview") }
             self.emit?("onHazardPreview", payload)
@@ -346,6 +358,7 @@ private final class DepthSensor: NSObject, ARSessionDelegate {
         result["depthPreview"] = backdrop
         result["denseScan"] = scan
         let preview = Self.publicPreview(result)
+        let guidanceResult = result
         DispatchQueue.main.async {
           guard let self else { return }
           self.hazardPending = false
@@ -354,6 +367,7 @@ private final class DepthSensor: NSObject, ARSessionDelegate {
             self.emit?("onWalkFrame", ["count": count])
           }
           guard self.runID == run, self.hazardEnabled, self.hazardGeneration == generation else { return }
+          self.updateModelHazards(guidanceResult, frame: framePose, time: frameTime)
           self.firstHazardPreview = false
           var payload = preview
           if self.scanGeneration != scanRun { payload.removeValue(forKey: "denseScan"); payload.removeValue(forKey: "depthPreview") }
@@ -363,6 +377,74 @@ private final class DepthSensor: NSObject, ARSessionDelegate {
     }
   }
 
+  private func resetPersonTracking() {
+    hazardTrackingNormal = false
+    hazardGeneration += 1
+    modelHazards.removeAll()
+    worldEpoch += 1
+  }
+
+  private func updateModelHazards(_ result: [String: Any], frame: simd_float4x4, time: Double) {
+    let position = frame.columns.3
+    let origin = SIMD3(position.x, position.y, position.z)
+    let versions = result["versions"] as? [String: String] ?? [:]
+    if versions["person"] != nil {
+      let people = result["people"] as? [[String: Any]] ?? []
+      modelHazards["person"] = (time, origin, people.compactMap { $0["guidance"] as? ModelHazardSample })
+    }
+    for mask in result["masks"] as? [[String: Any]] ?? [] {
+      if let kind = mask["kind"] as? String, let samples = mask["guidance"] as? [ModelHazardSample] {
+        modelHazards[kind] = (time, origin, samples)
+      }
+    }
+  }
+
+  private func guidanceHazards(_ frame: ARFrame) -> [[String: Any]]? {
+    let position = frame.camera.transform.columns.3
+    let origin = SIMD3(position.x, position.y, position.z)
+    var hazards: [[String: Any]] = []
+    var hasFreshResults = false
+    for kind in ["glass", "stairs", "person"] {
+      guard let batch = modelHazards[kind] else { continue }
+      let age = frame.timestamp - batch.time
+      guard age >= 0, age <= (kind == "person" ? 1.25 : 2.5) else { continue }
+      hasFreshResults = true
+      if kind == "glass" {
+        // The pane's distance is unknown, so a bearing cannot be translated.
+        guard simd_distance(origin, batch.origin) <= 0.45 else { continue }
+        let angles = batch.samples.compactMap { sample -> Float? in
+          guard let ray = relativePoint(origin + sample.world, camera: frame.camera), ray[2] > 0 else { return nil }
+          return atan2(ray[0], ray[2]) * 180 / .pi
+        }
+        if let left = angles.min(), let right = angles.max(), let confidence = batch.samples.map(\.confidence).max() {
+          hazards.append(["kind": kind, "confidence": confidence, "bearing": [left, right]])
+        }
+        continue
+      }
+      var stairs: [Int: (distance: Float, hazard: [String: Any])] = [:]
+      for sample in batch.samples {
+        guard let point = relativePoint(sample.world, camera: frame.camera),
+              point.allSatisfy({ $0.isFinite && abs($0) <= 10 }) else { continue }
+        var hazard: [String: Any] = ["kind": kind, "confidence": sample.confidence, "position": point]
+        if age <= 0.6, let predicted = sample.predicted,
+           let endpoint = relativePoint(predicted, camera: frame.camera),
+           endpoint.allSatisfy({ $0.isFinite && abs($0) <= 10 }) {
+          hazard["predictedPosition"] = endpoint
+        }
+        if kind == "stairs" {
+          guard point[2] > 0 else { continue }
+          let bin = Int((atan2(point[0], point[2]) * 12 / .pi).rounded())
+          let distance = hypot(point[0], point[2])
+          if distance < (stairs[bin]?.distance ?? .infinity) { stairs[bin] = (distance, hazard) }
+        } else {
+          hazards.append(hazard)
+        }
+      }
+      hazards += stairs.keys.sorted().compactMap { stairs[$0]?.hazard }
+    }
+    return hasFreshResults ? hazards : nil
+  }
+
   private static func publicPreview(_ result: [String: Any]) -> [String: Any] {
     var preview = result
     preview.removeValue(forKey: "versions")
@@ -370,11 +452,13 @@ private final class DepthSensor: NSObject, ARSessionDelegate {
       var person = person
       person.removeValue(forKey: "track_id")
       person.removeValue(forKey: "world")
+      person.removeValue(forKey: "guidance")
       return person
     }
     preview["masks"] = (result["masks"] as? [[String: Any]] ?? []).map { mask in
       var mask = mask
       mask.removeValue(forKey: "probabilities")
+      mask.removeValue(forKey: "guidance")
       return mask
     }
     return preview

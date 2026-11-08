@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
 import { HAZARD_LABELS, type DenseScan, type DepthPoint, type Grid, type Hazard, type Heading, type ModelPreview } from '../shared/contracts'
 import { CloudCanvas } from './CloudCanvas'
-import { decodeDenseScan, fillScanGaps, SCAN_HISTORY_MS, type ScanFrame } from './denseScan'
+import { decodeDenseScan, fillScanGaps, scanImagePoint, SCAN_HISTORY_MS, type ScanFrame } from './denseScan'
+import { modelPointColors } from './modelColors'
 
 const colors = ['#49608b', '#59a8b2', '#a1b979', '#e9ae6b']
 const heightRgb = colors.map(color => parseInt(color.slice(1), 16))
@@ -43,7 +44,7 @@ function frontBounds(points: readonly DepthPoint[] | undefined) {
   return { left: x[trim] ?? -0.5, right: x[last] ?? 0.5, bottom: y[trim] ?? -0.4, top: y[last] ?? 0.4 }
 }
 
-export function PointCloud({ points, pointColors, heading, hazards, phone, colorLabel, overlayPoints, people, imageAspect = 4 / 3, cameraOverlay, denseScan, fillRecent }: {
+export function PointCloud({ points, pointColors, heading, hazards, phone, colorLabel, overlayPoints, people, imageAspect = 4 / 3, cameraOverlay, denseScan, fillRecent, modelMasks }: {
   points: readonly DepthPoint[] | undefined
   pointColors?: string
   heading: Heading | null
@@ -56,8 +57,10 @@ export function PointCloud({ points, pointColors, heading, hazards, phone, color
   cameraOverlay?: { coordinates?: string; content: ReactNode }
   denseScan?: DenseScan
   fillRecent?: boolean
+  modelMasks?: ModelPreview['masks']
 }) {
   const [yaw, setYaw] = useState(-27)
+  const trailClip = useId()
   const [tilt, setTilt] = useState(36)
   const [angled, setAngled] = useState(false)
   const [zoom, setZoom] = useState(1)
@@ -101,6 +104,10 @@ export function PointCloud({ points, pointColors, heading, hazards, phone, color
   const fused = useMemo(() => trackedScan && currentDense
     ? fillScanGaps({ scan: trackedScan, decoded: currentDense }, history) : undefined, [trackedScan, currentDense, history])
   const dense = fused ?? currentDense
+  // Semantic labels belong only to measured points from this exact frame.
+  const semanticColors = useMemo(() => orbit && denseScan && currentDense && modelMasks
+    ? modelPointColors(denseScan, currentDense.indices, modelMasks) : undefined,
+  [orbit, denseScan, currentDense, modelMasks])
   const visiblePoints = dense?.points ?? points
   const showCameraOverlay = !orbit && (!!dense || !!imageCoordinates)
   const hasCameraColor = dense ? !!dense.colors.length : !!rgb?.length
@@ -171,8 +178,8 @@ export function PointCloud({ points, pointColors, heading, hazards, phone, color
       layers.set(stroke, (layers.get(stroke) ?? '') + `M${x.toFixed(1)},${y.toFixed(1)}h2.1`)
     }
   }
-  visiblePoints?.forEach((point, index) => addPoint(point, dense ? dense.colors[index] : rgb?.[index], false, index))
-  if (!showCameraOverlay) overlayPoints?.forEach(({ point, rgb }) => addPoint(point, rgb, true))
+  visiblePoints?.forEach((point, index) => addPoint(point, semanticColors?.[index] ?? (dense ? dense.colors[index] : rgb?.[index]), false, index))
+  if (!showCameraOverlay && !semanticColors) overlayPoints?.forEach(({ point, rgb }) => addPoint(point, rgb, true))
   const direction = (heading ?? 0) * Math.PI / 180
   const origin = project([0, -1.2, 0])
   const axes = [
@@ -209,8 +216,11 @@ export function PointCloud({ points, pointColors, heading, hazards, phone, color
         })}
         {showCameraOverlay && cameraOverlay && <svg x={imageX} y={imageY} width={imageWidth} height={imageHeight}
           viewBox="0 0 96 96" preserveAspectRatio="none">{cameraOverlay?.content}</svg>}
-        {!showCameraOverlay && people?.map(({ position, predictedPosition, box, confidence }, index) => {
-          if (!position || position[2] < 0.08) return null
+        {showCameraOverlay && denseScan && people?.length ? <defs><clipPath id={trailClip}>
+          <rect x={imageX} y={imageY} width={imageWidth} height={imageHeight} />
+        </clipPath></defs> : null}
+        {people?.map(({ position, predictedPosition, box, confidence, trackId, history, trajectory }, index) => {
+          if (!position || (!showCameraOverlay && position[2] < 0.08)) return null
           const [right, up, forward] = position
           // Estimate a box on the plane of the observed return using the image box size.
           const halfWidth = box[2] * forward * 0.7
@@ -220,11 +230,28 @@ export function PointCloud({ points, pointColors, heading, hazards, phone, color
             [right + halfWidth, up - halfHeight, forward], [right - halfWidth, up - halfHeight, forward],
           ]
           const [x, y] = project(corners[0])
-          return <g key={index}>
-            <polygon points={corners.map(project).join(' ')} fill="none" stroke="var(--model-person)" strokeWidth="2" vectorEffect="non-scaling-stroke" />
-            <text x={x + 3} y={y - 4} fill="var(--model-person)" fontSize="12">Person {Math.round(confidence * 100)}%</text>
-            {predictedPosition && <path d={`M${project(position)}L${project(predictedPosition)}`}
-              stroke="#ffc373" strokeWidth="2" strokeDasharray="5 4" />}
+          const projectTrail = (point: DepthPoint) => {
+            if (showCameraOverlay && denseScan) {
+              const uv = scanImagePoint(denseScan, point)
+              return uv ? [imageX + uv[0] * imageWidth, imageY + uv[1] * imageHeight] : undefined
+            }
+            return orbit || point[2] >= 0.08 ? project(point) : undefined
+          }
+          const trail = (points: readonly DepthPoint[]) => {
+            const projected = points.map(projectTrail)
+            return projected.every(point => point !== undefined) ? projected.join(' ') : undefined
+          }
+          const future = trajectory?.length ? [position, ...trajectory] : predictedPosition ? [position, predictedPosition] : []
+          return <g key={trackId === undefined ? `box-${index}` : `track-${trackId}`}
+            clipPath={showCameraOverlay && denseScan ? `url(#${trailClip})` : undefined}>
+            {!showCameraOverlay && <>
+              <polygon points={corners.map(project).join(' ')} fill="none" stroke="var(--model-person)" strokeWidth="2" vectorEffect="non-scaling-stroke" />
+              <text x={x + 3} y={y - 4} fill="var(--model-person)" fontSize="12">Person {trackId === undefined ? '' : `#${trackId} `}{Math.round(confidence * 100)}%</text>
+            </>}
+            {history && history.length > 1 && <polyline points={trail(history)}
+              fill="none" stroke="var(--model-person)" strokeWidth="2" opacity=".65" />}
+            {future.length > 1 && <polyline points={trail(future)}
+              fill="none" stroke="#ffc373" strokeWidth="2" strokeDasharray="5 4" />}
           </g>
         })}
       </svg>
