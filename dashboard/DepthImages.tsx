@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent } from 'react'
-import type { Observation } from '../shared/contracts'
+import type { DenseScan, DepthPreview, Observation } from '../shared/contracts'
+import { denseScanData } from './denseScan'
 
 const confidenceColors = [[236, 99, 85], [242, 192, 93], [76, 198, 178]]
 const confidenceLabels = ['Low', 'Medium', 'High']
 const distanceColors = [[40, 38, 156], [37, 112, 219], [76, 217, 229], [247, 222, 84], [235, 92, 41]]
+export const DEFAULT_DEPTH_RANGE_M = 3
 
 export function distancePalette(maxCm: number) {
   return Array.from({ length: 501 }, (_, cm) => {
@@ -16,13 +18,47 @@ export function distancePalette(maxCm: number) {
   })
 }
 
+function renderDistanceImage(width: number, height: number, colors: number[][], centimetersAt: (index: number) => number) {
+  const pixels = new ImageData(width, height)
+  for (let i = 0; i < width * height; i++) {
+    pixels.data.set(colors[Math.min(centimetersAt(i), 500)], i * 4)
+  }
+  return pixels
+}
+
+function packedDepthSample(samples: string, index: number) {
+  return samples.charCodeAt(index * 2) | (samples.charCodeAt(index * 2 + 1) << 8)
+}
+
+export function renderDepthRaster(scan: DenseScan | undefined, depth: DepthPreview | undefined, colors: number[][]) {
+  if (depth) {
+    const samples = atob(depth.samples)
+    return renderDistanceImage(depth.width, depth.height, colors, i => packedDepthSample(samples, i) & 0x3fff)
+  }
+  if (!scan) return undefined
+  const raster = denseScanData(scan)
+  return renderDistanceImage(scan.width, scan.height, colors, i => {
+    const meters = raster.getFloat32(i * 8, true)
+    return Number.isFinite(meters) && meters > 0 ? Math.max(1, Math.round(meters * 100)) : 0
+  })
+}
+
+export function DepthRaster({ pixels }: { pixels: ImageData }) {
+  const canvas = useRef<HTMLCanvasElement>(null)
+  useEffect(() => {
+    canvas.current?.getContext('2d')?.putImageData(pixels, 0, 0)
+  }, [pixels])
+  return <canvas ref={canvas} width={pixels.width} height={pixels.height} role="img" aria-label="LiDAR depth map"
+    style={{ display: 'block', width: '100%', height: '100%', imageRendering: 'pixelated' }} />
+}
+
 export function DepthImages({ observation }: { observation?: Observation }) {
   const [smooth, setSmooth] = useState(false)
   const [pixel, setPixel] = useState<{ x: number; y: number }>()
   const smoothed = smooth && !!observation?.smoothedDepthPreview
   const preview = smoothed ? observation?.smoothedDepthPreview : observation?.depthPreview
   const samples = useMemo(() => preview ? atob(preview.samples) : '', [preview])
-  const [range, setRange] = useState(3)
+  const [range, setRange] = useState(DEFAULT_DEPTH_RANGE_M)
   const depth = useRef<HTMLCanvasElement>(null)
   const confidence = useRef<HTMLCanvasElement>(null)
   useEffect(() => {
@@ -30,12 +66,11 @@ export function DepthImages({ observation }: { observation?: Observation }) {
     const confidenceContext = confidence.current?.getContext('2d')
     if (!preview || !depthContext || !confidenceContext) return
     const palette = distancePalette(range * 100)
-    const distance = depthContext.createImageData(preview.width, preview.height)
+    const distance = renderDistanceImage(preview.width, preview.height, palette, i => packedDepthSample(samples, i) & 0x3fff)
     const quality = confidenceContext.createImageData(preview.width, preview.height)
     for (let i = 0; i < preview.width * preview.height; i++) {
-      const sample = samples.charCodeAt(i * 2) | (samples.charCodeAt(i * 2 + 1) << 8)
+      const sample = packedDepthSample(samples, i)
       const cm = sample & 0x3fff
-      distance.data.set(palette[Math.min(cm, 500)], i * 4)
       const color = cm ? confidenceColors[sample >> 14] : undefined
       quality.data.set(color ? [...color, 255] : [0, 0, 0, 255], i * 4)
     }

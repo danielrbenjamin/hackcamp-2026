@@ -1,20 +1,16 @@
 import { useEffect, useId, useMemo, useRef, useState, type PointerEvent, type ReactNode } from 'react'
-import { HAZARD_LABELS, type DenseScan, type DepthPoint, type Grid, type Hazard, type Heading, type ModelPreview } from '../shared/contracts'
+import { HAZARD_LABELS, type DenseScan, type DepthPoint, type DepthPreview, type Grid, type Hazard, type Heading, type ModelPreview } from '../shared/contracts'
 import { CloudCanvas } from './CloudCanvas'
-import { distancePalette } from './DepthImages'
+import { DEFAULT_DEPTH_RANGE_M, DepthRaster, distancePalette, renderDepthRaster } from './DepthImages'
 import { decodeDenseScan, fillScanGaps, orientImagePoint, scanDisplayRotation, scanImagePoint, SCAN_HISTORY_MS, type ScanFrame } from './denseScan'
 import { modelPointColors } from './modelColors'
 
 const colors = ['#49608b', '#59a8b2', '#a1b979', '#e9ae6b']
 const heightRgb = colors.map(color => parseInt(color.slice(1), 16))
-const depthRgb = distancePalette(500).map(([r, g, b]) => (Math.round(r) << 16) | (Math.round(g) << 8) | Math.round(b))
+const depthPalette = distancePalette(DEFAULT_DEPTH_RANGE_M * 100)
+const depthRgb = depthPalette.map(([r, g, b]) => (Math.round(r) << 16) | (Math.round(g) << 8) | Math.round(b))
 const orbitHome = { yaw: -27, tilt: 36, zoom: 1, x: 0, y: 0 }
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value))
-
-function cameraColor(rgb: number): string {
-  const channel = (shift: number) => Math.round(((rgb >> shift) & 7) * 255 / 7)
-  return `rgb(${channel(21)},${channel(13)},${channel(5)})`
-}
 
 export function simulatedPoints(grid: Grid): DepthPoint[] {
   return grid.cells.flatMap((cell, index): DepthPoint[] => {
@@ -48,7 +44,7 @@ function frontBounds(points: readonly DepthPoint[] | undefined) {
   return { left: x[trim] ?? -0.5, right: x[last] ?? 0.5, bottom: y[trim] ?? -0.4, top: y[last] ?? 0.4 }
 }
 
-export function PointCloud({ points, pointColors, heading, hazards, phone, colorLabel, overlayPoints, people, imageAspect = 4 / 3, cameraOverlay, denseScan, fillRecent, modelMasks }: {
+export function PointCloud({ points, pointColors, heading, hazards, phone, colorLabel, overlayPoints, people, imageAspect = 4 / 3, cameraOverlay, denseScan, depthPreview, fillRecent, modelMasks }: {
   points: readonly DepthPoint[] | undefined
   pointColors?: string
   heading: Heading | null
@@ -60,6 +56,7 @@ export function PointCloud({ points, pointColors, heading, hazards, phone, color
   imageAspect?: number
   cameraOverlay?: { coordinates?: string; content: ReactNode; upright?: ReactNode }
   denseScan?: DenseScan
+  depthPreview?: DepthPreview
   fillRecent?: boolean
   modelMasks?: ModelPreview['masks']
 }) {
@@ -161,6 +158,9 @@ export function PointCloud({ points, pointColors, heading, hazards, phone, color
   const showCameraOverlay = !orbit && (!!dense || !!imageCoordinates)
   const hasCameraColor = dense ? !!dense.colors.length : !!rgb?.length
   const showDepthColor = depthColor && !!dense
+  const frontDepth = !orbit && showDepthColor ? denseScan : undefined
+  const depthPixels = useMemo(() => frontDepth ? renderDepthRaster(frontDepth, depthPreview, depthPalette) : undefined,
+    [frontDepth, depthPreview])
   const scale = 58 * camera.zoom * (phone ? 1.6 : 1)
   const centerDepth = phone ? 1.75 : 2.5
   const bounds = useMemo(() => frontBounds(dense ? undefined : points), [dense, points])
@@ -172,7 +172,7 @@ export function PointCloud({ points, pointColors, heading, hazards, phone, color
   const viewBox = `0 0 ${frameWidth} 420`
   const rotation = scanDisplayRotation(denseScan)
   const sensorAspect = denseScan ? denseScan.width / denseScan.height : imageAspect
-  const aspect = Math.abs(rotation) === 90 ? 1 / sensorAspect : sensorAspect
+  const aspect = depthPixels ? depthPixels.width / depthPixels.height : Math.abs(rotation) === 90 ? 1 / sensorAspect : sensorAspect
   const imageWidth = Math.min(frameWidth, 420 * aspect) * zoom
   const imageHeight = imageWidth / aspect
   const imageX = (frameWidth - imageWidth) / 2
@@ -204,7 +204,7 @@ export function PointCloud({ points, pointColors, heading, hazards, phone, color
       `M${project([-5, -1.2, depth])}L${project([5, -1.2, depth])}`].join('')
   }).join('')
   const layers = new Map<string, string>()
-  const vertexData = new Float32Array(((visiblePoints?.length ?? 0) + (overlayPoints?.length ?? 0)) * 6)
+  const vertexData = new Float32Array(depthPixels ? 0 : ((visiblePoints?.length ?? 0) + (overlayPoints?.length ?? 0)) * 6)
   let offset = 0
   function addPoint(point: DepthPoint, pointRgb: number | undefined, overlay = false, index?: number) {
     if (!orbit && !showCameraOverlay && point[2] < 0.08) return
@@ -232,17 +232,19 @@ export function PointCloud({ points, pointColors, heading, hazards, phone, color
     vertexData[offset++] = ((color >> 8) & 255) / 255
     vertexData[offset++] = (color & 255) / 255
     if (fallback) {
-      const stroke = pointRgb === undefined ? colors[layer] : cameraColor(pointRgb)
+      const stroke = `#${color.toString(16).padStart(6, '0')}`
       layers.set(stroke, (layers.get(stroke) ?? '') + `M${x.toFixed(1)},${y.toFixed(1)}h2.1`)
     }
   }
-  visiblePoints?.forEach((point, index) => {
-    const baseColor = dense
-      ? showDepthColor ? depthRgb[clamp(Math.round(dense.depths[index] * 100), 1, 500)] : dense.colors[index]
-      : rgb?.[index]
-    addPoint(point, semanticColors?.[index] ?? baseColor, false, index)
-  })
-  if (!showCameraOverlay && !semanticColors) overlayPoints?.forEach(({ point, rgb }) => addPoint(point, rgb, true))
+  if (!depthPixels) {
+    visiblePoints?.forEach((point, index) => {
+      const baseColor = dense
+        ? showDepthColor ? depthRgb[clamp(Math.round(dense.depths[index] * 100), 1, 500)] : dense.colors[index]
+        : rgb?.[index]
+      addPoint(point, semanticColors?.[index] ?? baseColor, false, index)
+    })
+    if (!showCameraOverlay && !semanticColors) overlayPoints?.forEach(({ point, rgb }) => addPoint(point, rgb, true))
+  }
   const direction = (heading ?? 0) * Math.PI / 180
   const origin = project([0, -1.2, 0])
   const axes = [
@@ -267,9 +269,12 @@ export function PointCloud({ points, pointColors, heading, hazards, phone, color
       {orbit && <svg viewBox={viewBox} className="cloud" aria-hidden="true">
         <path d={grid} fill="none" stroke="#293039" />
       </svg>}
-      <CloudCanvas vertices={vertexData.subarray(0, offset)} frameWidth={frameWidth} onFallback={setFallback} />
+      {!depthPixels && <CloudCanvas vertices={vertexData.subarray(0, offset)} frameWidth={frameWidth} onFallback={setFallback} />}
       <svg viewBox={viewBox} className="cloud" role="img"
-        aria-label={showDepthColor ? '3D LiDAR points colored by depth' : colorLabel ?? (hasCameraColor ? '3D LiDAR points with camera colors' : '3D LiDAR points colored by relative height')}>
+        aria-label={depthPixels ? 'LiDAR depth map' : showDepthColor ? '3D LiDAR points colored by depth' : colorLabel ?? (hasCameraColor ? '3D LiDAR points with camera colors' : '3D LiDAR points colored by relative height')}>
+        {depthPixels && <foreignObject x={imageX} y={imageY} width={imageWidth} height={imageHeight}>
+          <DepthRaster pixels={depthPixels} />
+        </foreignObject>}
         {[...layers].map(([color, path]) => <path key={color} d={path} fill="none" stroke={color} strokeWidth="2.1" />)}
         {orbit && axes.map(({ label, end, color }) => <g key={label}>
           <path d={`M${origin}L${end}`} stroke={color} />
@@ -335,11 +340,11 @@ export function PointCloud({ points, pointColors, heading, hazards, phone, color
       </svg>
       <div className="scan-label">{phone ? 'ARKIT' : 'SIM'} / {visiblePoints?.length.toLocaleString() ?? 0} points
         {fused?.filled ? ` / ${fused.filled.toLocaleString()} from recent frames` : ''}
-        {fallback ? ' / SVG fallback' : ''}</div>
+        {fallback && !depthPixels ? ' / SVG fallback' : ''}</div>
       {!visiblePoints?.length && !hazards?.length && <p className="scan-empty">{!phone || visiblePoints ? 'No depth returns' : 'Enable 3D scan sharing on the iPhone'}</p>}
     </div>
     <div className="legend">
-      {showDepthColor ? <span className="depth-key">Near <i className="depth-scale" />5 m</span>
+      {showDepthColor ? <span className="depth-key">Near <i className="depth-scale" />{DEFAULT_DEPTH_RANGE_M} m</span>
         : colorLabel ? <span>{colorLabel}</span> : hasCameraColor ? <span>Camera color</span>
         : <span><i className="height-scale" />Height relative to phone</span>}
       <div className="scan-modes">
