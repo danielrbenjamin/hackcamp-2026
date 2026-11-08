@@ -11,7 +11,6 @@ import { ActionButton as Control } from './ActionButton'
 import { SettingSwitch } from './SettingSwitch'
 import { mono, terminal } from './terminal'
 import { createRecording, telemetrySummary } from './session'
-import { scanPose } from '../shared/roomScan'
 
 const telemetryUrl = process.env.EXPO_PUBLIC_TELEMETRY_URL
 const telemetryToken = process.env.EXPO_PUBLIC_TELEMETRY_TOKEN
@@ -50,7 +49,6 @@ export default function App() {
   const realBelt = useRef(disconnected)
   const google = useRef<Route | null>(null)
   const latestFrame = useRef<Telemetry>(null)
-  const trackingEpoch = useRef(0)
   const recordingActive = useRef(false)
   const session = useRef<ReturnType<typeof createRecording>>(null)
   const lastRecorded = useRef(0)
@@ -118,7 +116,6 @@ export default function App() {
     }) : undefined
     const onStatus = native ? nativeDepth?.addListener('onStatus', event => {
       setStatus(event.status)
-      if (event.status === 'running') trackingEpoch.current++
       if (event.status !== 'running') latest = emptyObservation()
     }) : undefined
     function stop() {
@@ -173,26 +170,15 @@ export default function App() {
     let request: AbortController | undefined
     let active = true
     let sentAt = 0
-    const scanId = Math.random().toString(36).slice(2)
-    let epoch = -1
-    let scanOrigin: number[] | undefined
     const interval = setInterval(() => {
       const value = latestFrame.current
       if (request || !value || value.observation.timeMs <= sentAt || AppState.currentState === 'background') return
       sentAt = value.observation.timeMs
-      let relativePose
-      if (native && sharePoints && value.observation.points?.length && value.observation.pose) {
-        if (epoch !== trackingEpoch.current) {
-          epoch = trackingEpoch.current
-          scanOrigin = value.observation.pose
-        }
-        if (scanOrigin) relativePose = scanPose(value.observation.pose, scanOrigin, `${scanId}-${epoch}`)
-      }
       request = new AbortController()
       const timeout = setTimeout(() => request?.abort(), 1_500)
       void fetch(endpoint, { method: 'POST', signal: request.signal,
         headers: { Authorization: `Bearer ${telemetryToken}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify(telemetrySummary(value, native && sharePoints, relativePose)),
+        body: JSON.stringify(telemetrySummary(value, native && sharePoints)),
       }).then(response => {
         if (active) setStreamStatus(response.ok ? 'Streaming to dashboard' : `Dashboard returned ${response.status}`)
       }, () => { if (active) setStreamStatus('Dashboard unreachable') }).finally(() => {

@@ -4,11 +4,6 @@ export type Five<T> = readonly [T, T, T, T, T]
 export type Heading = typeof HEADINGS[number]
 export type Cell = 0 | 1 | 2 // unknown, observed free, occupied
 export type DepthPoint = readonly [right: number, up: number, forward: number]
-export interface ScanPose {
-  session: string
-  origin: DepthPoint
-  yaw: number
-}
 export const MAX_DEPTH_POINTS = 6_000
 export const MAX_DEPTH_PREVIEW_DIMENSION = 256
 export interface DepthPreview {
@@ -48,7 +43,7 @@ export interface Observation {
   // Base64 RGB bytes in the same order as points. Sent only with scan sharing.
   pointColors?: string
   depthPreview?: DepthPreview
-  scanPose?: ScanPose
+  smoothedDepthPreview?: DepthPreview
   // Frame-aligned detections. Undefined means unavailable; [] means no detections.
   hazards?: readonly Hazard[]
   depth?: {

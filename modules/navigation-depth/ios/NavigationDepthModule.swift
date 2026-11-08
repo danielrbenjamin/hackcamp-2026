@@ -143,6 +143,9 @@ private final class DepthSensor: NSObject, ARSessionDelegate {
     let config = ARWorldTrackingConfiguration()
     config.worldAlignment = .gravityAndHeading
     config.frameSemantics.insert(.sceneDepth)
+    if ARWorldTrackingConfiguration.supportsFrameSemantics(.smoothedSceneDepth) {
+      config.frameSemantics.insert(.smoothedSceneDepth)
+    }
     session.delegateQueue = .main
     session.delegate = self
     lastFrameTime = -Double.infinity
@@ -178,7 +181,6 @@ private final class DepthSensor: NSObject, ARSessionDelegate {
     var zones = [Any](repeating: NSNull(), count: 5)
     var points = [[Double]]()
     var pointPixels = [SIMD2<Float>]()
-    var depthPreview: [String: Any]?
     let columns = [pose.columns.0, pose.columns.1, pose.columns.2, pose.columns.3]
     var payload: [String: Any] = [
       "source": "arkit",
@@ -195,7 +197,11 @@ private final class DepthSensor: NSObject, ARSessionDelegate {
       let capture = recording && frame.timestamp - lastDepthTime >= 0.5
       if capture { lastDepthTime = frame.timestamp }
       payload["depth"] = project(depth, camera: frame.camera, cells: &cells, zones: &zones,
-                                 points: &points, pointPixels: &pointPixels, depthPreview: &depthPreview, capture: capture)
+                                 points: &points, pointPixels: &pointPixels, capture: capture)
+      if previewing {
+        payload["depthPreview"] = encodeDepthPreview(depth)
+        payload["smoothedDepthPreview"] = frame.smoothedSceneDepth.flatMap(encodeDepthPreview)
+      }
       if simd_length(cameraForward) > 0.4 {
         retainRecentHits(pose: pose, forward: simd_normalize(cameraForward), time: frame.timestamp, cells: &cells)
       } else {
@@ -208,7 +214,6 @@ private final class DepthSensor: NSObject, ARSessionDelegate {
     if previewing {
       payload["points"] = points
       payload["pointColors"] = samplePointColors(frame.capturedImage, pixels: pointPixels)
-      payload["depthPreview"] = depthPreview
     }
     payload["grid"] = ["width": 40, "height": 20, "cellM": 0.25, "cells": cells] as [String: Any]
     emit("onObservation", payload)
@@ -234,9 +239,42 @@ private final class DepthSensor: NSObject, ARSessionDelegate {
     recentHits.append((time, observed))
   }
 
+  private func encodeDepthPreview(_ depth: ARDepthData) -> [String: Any]? {
+    let map = depth.depthMap
+    guard let confidence = depth.confidenceMap,
+          CVPixelBufferGetPixelFormatType(map) == kCVPixelFormatType_DepthFloat32,
+          CVPixelBufferGetPixelFormatType(confidence) == kCVPixelFormatType_OneComponent8 else { return nil }
+    let width = CVPixelBufferGetWidth(map)
+    let height = CVPixelBufferGetHeight(map)
+    guard width == CVPixelBufferGetWidth(confidence), height == CVPixelBufferGetHeight(confidence),
+          CVPixelBufferLockBaseAddress(map, .readOnly) == kCVReturnSuccess else { return nil }
+    defer { CVPixelBufferUnlockBaseAddress(map, .readOnly) }
+    guard CVPixelBufferLockBaseAddress(confidence, .readOnly) == kCVReturnSuccess else { return nil }
+    defer { CVPixelBufferUnlockBaseAddress(confidence, .readOnly) }
+    guard let depths = CVPixelBufferGetBaseAddress(map),
+          let qualities = CVPixelBufferGetBaseAddress(confidence) else { return nil }
+    let depthStride = CVPixelBufferGetBytesPerRow(map)
+    let confidenceStride = CVPixelBufferGetBytesPerRow(confidence)
+    let step = max(1, (max(width, height) + 255) / 256)
+    let previewWidth = (width + step - 1) / step
+    let previewHeight = (height + step - 1) / step
+    var samples = Data()
+    samples.reserveCapacity(previewWidth * previewHeight * 2)
+    for y in stride(from: 0, to: height, by: step) {
+      for x in stride(from: 0, to: width, by: step) {
+        let z = depths.load(fromByteOffset: y * depthStride + x * 4, as: Float.self)
+        let quality = min(2, qualities.load(fromByteOffset: y * confidenceStride + x, as: UInt8.self))
+        let cm = z.isFinite && z >= 0.01 && z <= 5 ? UInt16((z * 100).rounded()) : 0
+        let sample = cm | (UInt16(quality) << 14)
+        samples.append(UInt8(truncatingIfNeeded: sample))
+        samples.append(UInt8(sample >> 8))
+      }
+    }
+    return ["width": previewWidth, "height": previewHeight, "samples": samples.base64EncodedString()]
+  }
+
   private func project(_ depth: ARDepthData, camera: ARCamera, cells: inout [Int], zones: inout [Any],
-                       points: inout [[Double]], pointPixels: inout [SIMD2<Float>],
-                       depthPreview: inout [String: Any]?, capture: Bool) -> [String: Any]? {
+                       points: inout [[Double]], pointPixels: inout [SIMD2<Float>], capture: Bool) -> [String: Any]? {
     let map = depth.depthMap
     guard let confidence = depth.confidenceMap,
           CVPixelBufferGetPixelFormatType(map) == kCVPixelFormatType_DepthFloat32,
@@ -253,24 +291,6 @@ private final class DepthSensor: NSObject, ARSessionDelegate {
           let qualities = CVPixelBufferGetBaseAddress(confidence) else { return nil }
     let depthStride = CVPixelBufferGetBytesPerRow(map)
     let confidenceStride = CVPixelBufferGetBytesPerRow(confidence)
-    if previewing {
-      let step = max(1, (max(width, height) + 255) / 256)
-      let previewWidth = (width + step - 1) / step
-      let previewHeight = (height + step - 1) / step
-      var samples = Data()
-      samples.reserveCapacity(previewWidth * previewHeight * 2)
-      for y in stride(from: 0, to: height, by: step) {
-        for x in stride(from: 0, to: width, by: step) {
-          let z = depths.load(fromByteOffset: y * depthStride + x * 4, as: Float.self)
-          let quality = min(2, qualities.load(fromByteOffset: y * confidenceStride + x, as: UInt8.self))
-          let cm = z.isFinite && z >= 0.01 && z <= 5 ? UInt16((z * 100).rounded()) : 0
-          let sample = cm | (UInt16(quality) << 14)
-          samples.append(UInt8(truncatingIfNeeded: sample))
-          samples.append(UInt8(sample >> 8))
-        }
-      }
-      depthPreview = ["width": previewWidth, "height": previewHeight, "samples": samples.base64EncodedString()]
-    }
     let pose = camera.transform
     let cameraForward = SIMD2<Float>(-pose.columns.2.x, -pose.columns.2.z)
     guard simd_length(cameraForward) > 0.4 else { return nil }

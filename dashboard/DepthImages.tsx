@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type PointerEvent } from 'react'
 import type { Observation } from '../shared/contracts'
 
 const confidenceColors = [[236, 99, 85], [242, 192, 93], [76, 198, 178]]
+const confidenceLabels = ['Low', 'Medium', 'High']
 const distanceColors = [[40, 38, 156], [37, 112, 219], [76, 217, 229], [247, 222, 84], [235, 92, 41]]
 
 function distancePalette(maxCm: number) {
@@ -16,7 +17,11 @@ function distancePalette(maxCm: number) {
 }
 
 export function DepthImages({ observation }: { observation?: Observation }) {
-  const preview = observation?.depthPreview
+  const [smooth, setSmooth] = useState(false)
+  const [pixel, setPixel] = useState<{ x: number; y: number }>()
+  const smoothed = smooth && !!observation?.smoothedDepthPreview
+  const preview = smoothed ? observation?.smoothedDepthPreview : observation?.depthPreview
+  const samples = useMemo(() => preview ? atob(preview.samples) : '', [preview])
   const [range, setRange] = useState(3)
   const depth = useRef<HTMLCanvasElement>(null)
   const confidence = useRef<HTMLCanvasElement>(null)
@@ -24,7 +29,6 @@ export function DepthImages({ observation }: { observation?: Observation }) {
     const depthContext = depth.current?.getContext('2d')
     const confidenceContext = confidence.current?.getContext('2d')
     if (!preview || !depthContext || !confidenceContext) return
-    const samples = atob(preview.samples)
     const palette = distancePalette(range * 100)
     const distance = depthContext.createImageData(preview.width, preview.height)
     const quality = confidenceContext.createImageData(preview.width, preview.height)
@@ -37,7 +41,7 @@ export function DepthImages({ observation }: { observation?: Observation }) {
     }
     depthContext.putImageData(distance, 0, 0)
     confidenceContext.putImageData(quality, 0, 0)
-  }, [preview, range])
+  }, [preview, range, samples])
 
   if (!preview) {
     const message = observation?.source !== 'arkit' ? 'Waiting for live iPhone LiDAR telemetry.'
@@ -46,10 +50,31 @@ export function DepthImages({ observation }: { observation?: Observation }) {
       : 'The iPhone is sending 3D points but no depth or confidence image. Check the installed iOS build and reload Lantern from the latest Expo checkout.'
     return <p className="waiting">{message}</p>
   }
+  const { width, height } = preview
+  const sampleIndex = pixel && pixel.x < width && pixel.y < height ? 2 * (pixel.y * width + pixel.x) : undefined
+  const sample = sampleIndex === undefined ? 0 : samples.charCodeAt(sampleIndex) | (samples.charCodeAt(sampleIndex + 1) << 8)
+  const cm = sample & 0x3fff
+  function inspect(event: PointerEvent<HTMLCanvasElement>) {
+    const rect = event.currentTarget.getBoundingClientRect()
+    const scale = Math.min(rect.width / width, rect.height / height)
+    if (scale <= 0) return
+    const x = Math.floor((event.clientX - rect.left - (rect.width - width * scale) / 2) / scale)
+    const y = Math.floor((event.clientY - rect.top - (rect.height - height * scale) / 2) / scale)
+    setPixel(x >= 0 && y >= 0 && x < width && y < height ? { x, y } : undefined)
+  }
   return <div className="depth-images">
+    <div className="depth-toolbar">
+      <div className="scan-modes" role="group" aria-label="Depth source">
+        <button aria-pressed={!smoothed} onClick={() => setSmooth(false)}>Raw</button>
+        <button aria-pressed={smoothed} disabled={!observation?.smoothedDepthPreview} onClick={() => setSmooth(true)}>Smoothed</button>
+      </div>
+      <span>{pixel ? cm ? `${(cm / 100).toFixed(2)} m · ${confidenceLabels[sample >> 14] ?? 'Unknown'} confidence` : 'No depth return'
+        : 'Point at either image to inspect a pixel'}</span>
+    </div>
     <figure>
       <figcaption>Distance <span>{preview.width} × {preview.height}</span></figcaption>
       <canvas className="depth-distance" ref={depth} width={preview.width} height={preview.height} role="img"
+        onPointerMove={inspect} onPointerDown={inspect} onPointerLeave={() => setPixel(undefined)}
         aria-label={`Depth image with a color range from zero to ${range} metres`} />
       <div className="depth-key"><span>Near</span><i className="depth-scale" /><span>{range} m</span>
         <label>Color range <select value={range} onChange={event => setRange(Number(event.target.value))}>
@@ -59,8 +84,10 @@ export function DepthImages({ observation }: { observation?: Observation }) {
     </figure>
     <figure>
       <figcaption>ARKit confidence</figcaption>
-      <canvas ref={confidence} width={preview.width} height={preview.height} role="img" aria-label="Low, medium and high confidence depth samples" />
-      <div className="depth-key">{['Low', 'Medium', 'High'].map((label, i) =>
+      <canvas ref={confidence} width={preview.width} height={preview.height} role="img"
+        onPointerMove={inspect} onPointerDown={inspect} onPointerLeave={() => setPixel(undefined)}
+        aria-label="Low, medium and high confidence depth samples" />
+      <div className="depth-key">{confidenceLabels.map((label, i) =>
         <span key={label}><i style={{ background: `rgb(${confidenceColors[i].join(',')})` }} />{label}</span>
       )}<span>Black: no return</span></div>
     </figure>

@@ -1,12 +1,13 @@
 import { File, Paths } from 'expo-file-system'
 import { isAvailableAsync, shareAsync } from 'expo-sharing'
 import { Platform } from 'react-native'
-import type { ScanPose, Telemetry } from '../shared/contracts'
+import type { Telemetry } from '../shared/contracts'
 
-export function telemetrySummary(frame: Telemetry, sharePoints = false, scanPose?: ScanPose): Telemetry {
-  const { depth: _depth, pose: _pose, forwardTrueHeading: _heading, scanPose: _scanPose, points, pointColors, hazards, depthPreview, ...observation } = frame.observation
+export function telemetrySummary(frame: Telemetry, sharePoints = false): Telemetry {
+  const { depth: _depth, pose: _pose, forwardTrueHeading: _heading, points, pointColors, hazards,
+    depthPreview, smoothedDepthPreview, ...observation } = frame.observation
   const { trueBearing: _bearing, updatedAtMs: _updated, ...route } = frame.route
-  return { ...frame, observation: sharePoints ? { ...observation, points, pointColors, hazards, scanPose, depthPreview } : observation,
+  return { ...frame, observation: sharePoints ? { ...observation, points, pointColors, hazards, depthPreview, smoothedDepthPreview } : observation,
     route: { ...route, destination: '', maneuver: '' } }
 }
 
@@ -18,7 +19,8 @@ export function createRecording() {
     append(frame: Telemetry) {
       if (lines.length >= 240) return
       const { route } = telemetrySummary(frame)
-      const { points: _points, pointColors: _colors, depthPreview: _preview, ...observation } = frame.observation
+      const { points: _points, pointColors: _colors, depthPreview: _preview,
+        smoothedDepthPreview: _smoothed, ...observation } = frame.observation
       lines.push(JSON.stringify({ schemaVersion: 1, sessionId, sequence: lines.length, startedAtMs,
         consent: { granted: true, scope: 'local-recording' }, frame: { ...frame, observation, route } }))
     },

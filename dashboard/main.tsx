@@ -175,7 +175,7 @@ function Dashboard() {
               : !grid || !observation ? <p className="waiting">{link || 'Waiting for depth data'}</p>
               : mapView === 'cloud' ? <PointCloud points={observation.source === 'simulated' ? simulatedPoints(grid) : observation.points}
                 heading={heading} hazards={detections} phone={observation.source === 'arkit'}
-                scanPose={observation.scanPose} pointColors={observation.pointColors} timeMs={observation.timeMs} /> : <>
+                pointColors={observation.pointColors} /> : <>
                 <div className="scan">
                   <svg className="map" viewBox={`0 0 ${grid.width} ${grid.height}`} role="img" aria-label="Occupancy grid with device at bottom centre">
                     {grid.cells.map((cell, i) => <rect key={i} x={i % grid.width} y={Math.floor(i / grid.width)} width=".94" height=".94" fill={cellColors[cell]} />)}

@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { HAZARD_LABELS, type DepthPoint, type Grid, type Hazard, type Heading, type ScanPose } from '../shared/contracts'
-import { addScanFrame, type ScanPoint } from '../shared/roomScan'
+import { HAZARD_LABELS, type DepthPoint, type Grid, type Hazard, type Heading } from '../shared/contracts'
+import { CloudCanvas } from './CloudCanvas'
 
 const colors = ['#49608b', '#59a8b2', '#a1b979', '#e9ae6b']
+const heightRgb = colors.map(color => parseInt(color.slice(1), 16))
 
 function cameraColor(rgb: number): string {
   const channel = (shift: number) => Math.round(((rgb >> shift) & 7) * 255 / 7)
@@ -24,22 +25,47 @@ export function simulatedPoints(grid: Grid): DepthPoint[] {
   })
 }
 
-export function PointCloud({ points, pointColors, heading, hazards, phone, scanPose, timeMs }: {
+function frontBounds(points: readonly DepthPoint[] | undefined) {
+  const x: number[] = []
+  const y: number[] = []
+  const step = Math.max(1, Math.floor((points?.length ?? 0) / 1_000))
+  for (let i = 0; points && i < points.length; i += step) {
+    const [right, up, forward] = points[i]
+    if (forward < 0.08) continue
+    x.push(right / forward)
+    y.push(up / forward)
+  }
+  x.sort((a, b) => a - b)
+  y.sort((a, b) => a - b)
+  const trim = Math.floor(x.length * 0.02)
+  const last = x.length - 1 - trim
+  return { left: x[trim] ?? -0.5, right: x[last] ?? 0.5, bottom: y[trim] ?? -0.4, top: y[last] ?? 0.4 }
+}
+
+export function PointCloud({ points, pointColors, heading, hazards, phone }: {
   points: readonly DepthPoint[] | undefined
   pointColors?: string
   heading: Heading | null
   hazards?: readonly Hazard[]
   phone: boolean
-  scanPose?: ScanPose
-  timeMs: number
 }) {
   const [yaw, setYaw] = useState(-27)
   const [tilt, setTilt] = useState(36)
   const [angled, setAngled] = useState(false)
   const [zoom, setZoom] = useState(1)
-  const [room, setRoom] = useState(false)
-  const [roomPoints, setRoomPoints] = useState<ScanPoint[]>([])
-  const roomScan = useRef({ session: '', timeMs: -Infinity, voxels: new Map<string, ScanPoint>() })
+  const [fallback, setFallback] = useState(false)
+  const scan = useRef<HTMLDivElement>(null)
+  const [frameWidth, setFrameWidth] = useState(720)
+  useEffect(() => {
+    const element = scan.current
+    if (!element) return
+    const observer = new ResizeObserver(([entry]) => {
+      const { width, height } = entry.contentRect
+      if (width > 0 && height > 0) setFrameWidth(Math.round(420 * width / height))
+    })
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [])
   const rgb = useMemo(() => {
     if (!pointColors) return undefined
     const bytes = atob(pointColors)
@@ -48,48 +74,58 @@ export function PointCloud({ points, pointColors, heading, hazards, phone, scanP
       return bytes.charCodeAt(start) * 65_536 + bytes.charCodeAt(start + 1) * 256 + bytes.charCodeAt(start + 2)
     })
   }, [pointColors])
-  useEffect(() => {
-    const scan = roomScan.current
-    const session = phone && points !== undefined ? scanPose?.session ?? scan.session : ''
-    if (scan.session !== session) {
-      scan.session = session
-      scan.timeMs = -Infinity
-      scan.voxels.clear()
-      setRoomPoints([])
-    }
-    if (!room || !scanPose || !points?.length || timeMs <= scan.timeMs) return
-    scan.timeMs = timeMs
-    addScanFrame(scan.voxels, points, scanPose, rgb)
-    setRoomPoints([...scan.voxels.values()])
-  }, [room, scanPose, points, phone, timeMs, rgb])
-  const roomAvailable = phone && points !== undefined && (!!scanPose || roomPoints.length > 0)
-  const showRoom = room && roomAvailable
-  const orbit = showRoom || angled
-  const visiblePoints: ScanPoint[] | undefined = showRoom ? roomPoints
-    : points?.map((position, index) => ({ position, rgb: rgb?.[index] }))
-  const hasCameraColor = visiblePoints?.some(point => point.rgb !== undefined)
-  const scale = 58 * zoom * (phone && !showRoom ? 1.6 : 1)
-  const centerDepth = showRoom ? 0 : phone ? 1.75 : 2.5
+  const orbit = angled
+  const hasCameraColor = !!rgb?.length
+  const scale = 58 * zoom * (phone ? 1.6 : 1)
+  const centerDepth = phone ? 1.75 : 2.5
+  const bounds = useMemo(() => frontBounds(points), [points])
+  const frontScale = zoom * Math.min(frameWidth * 0.94 / Math.max(0.15, bounds.right - bounds.left),
+    420 * 0.90 / Math.max(0.15, bounds.top - bounds.bottom), 900)
+  const frontX = (bounds.left + bounds.right) / 2
+  const frontY = (bounds.bottom + bounds.top) / 2
+  const centerX = frameWidth / 2
+  const viewBox = `0 0 ${frameWidth} 420`
   const angle = (orbit ? yaw : 0) * Math.PI / 180
   const pitch = (orbit ? tilt : 0) * Math.PI / 180
   const sin = Math.sin(angle)
   const cos = Math.cos(angle)
-  function project([right, up, forward]: DepthPoint) {
-    return [360 + (right * cos + (forward - centerDepth) * sin) * scale,
-      212 - (up * Math.cos(pitch) + ((forward - centerDepth) * cos - right * sin) * Math.sin(pitch)) * scale]
+  const pitchSin = Math.sin(pitch)
+  const pitchCos = Math.cos(pitch)
+  function projectPoint([right, up, forward]: DepthPoint) {
+    if (!orbit) {
+      const z = Math.max(0.08, forward)
+      return [centerX + (right / z - frontX) * frontScale, 210 - (up / z - frontY) * frontScale, forward]
+    }
+    const depth = (forward - centerDepth) * cos - right * sin
+    return [centerX + (right * cos + (forward - centerDepth) * sin) * scale,
+      210 - (up * pitchCos + depth * pitchSin) * scale, depth * pitchCos - up * pitchSin]
   }
+  const project = (point: DepthPoint) => projectPoint(point).slice(0, 2)
   const grid = Array.from({ length: 11 }, (_, i) => {
     const x = i - 5
-    const depth = showRoom ? x : i / 2
-    return [`M${project([x, -1.2, showRoom ? -5 : 0])}L${project([x, -1.2, 5])}`,
+    const depth = i / 2
+    return [`M${project([x, -1.2, 0])}L${project([x, -1.2, 5])}`,
       `M${project([-5, -1.2, depth])}L${project([5, -1.2, depth])}`].join('')
   }).join('')
   const layers = new Map<string, string>()
-  for (const { position: point, rgb } of visiblePoints ?? []) {
-    const [x, y] = project(point)
+  const vertexData = new Float32Array((points?.length ?? 0) * 6)
+  let offset = 0
+  for (const [index, point] of (points ?? []).entries()) {
+    const pointRgb = rgb?.[index]
+    if (!orbit && point[2] < 0.08) continue
+    const [x, y, depth] = projectPoint(point)
     const layer = point[1] < -0.95 ? 0 : point[1] < -0.45 ? 1 : point[1] < 0.2 ? 2 : 3
-    const color = rgb === undefined ? colors[layer] : cameraColor(rgb)
-    layers.set(color, (layers.get(color) ?? '') + `M${x.toFixed(1)},${y.toFixed(1)}h2.1`)
+    const color = pointRgb ?? heightRgb[layer]
+    vertexData[offset++] = x / centerX - 1
+    vertexData[offset++] = 1 - y / 210
+    vertexData[offset++] = depth / (1 + Math.abs(depth))
+    vertexData[offset++] = (color >> 16) / 255
+    vertexData[offset++] = ((color >> 8) & 255) / 255
+    vertexData[offset++] = (color & 255) / 255
+    if (fallback) {
+      const stroke = pointRgb === undefined ? colors[layer] : cameraColor(pointRgb)
+      layers.set(stroke, (layers.get(stroke) ?? '') + `M${x.toFixed(1)},${y.toFixed(1)}h2.1`)
+    }
   }
   const direction = (heading ?? 0) * Math.PI / 180
   const origin = project([0, -1.2, 0])
@@ -99,20 +135,23 @@ export function PointCloud({ points, pointColors, heading, hazards, phone, scanP
     { label: 'Z', end: project([0, -1.2, 0.65]), color: '#9dd9e8' },
   ]
   return <>
-    <div className="scan">
-      <svg viewBox="0 0 720 420" className="cloud" role="img"
+    <div className="scan" ref={scan}>
+      {orbit && <svg viewBox={viewBox} className="cloud" aria-hidden="true">
+        <path d={grid} fill="none" stroke="#293039" />
+      </svg>}
+      <CloudCanvas vertices={vertexData.subarray(0, offset)} frameWidth={frameWidth} onFallback={setFallback} />
+      <svg viewBox={viewBox} className="cloud" role="img"
         aria-label={hasCameraColor ? '3D LiDAR points with camera colors' : '3D LiDAR points colored by relative height'}>
-        {orbit && <path d={grid} fill="none" stroke="#293039" />}
         {[...layers].map(([color, path]) => <path key={color} d={path} fill="none" stroke={color} strokeWidth="2.1" />)}
         {orbit && axes.map(({ label, end, color }) => <g key={label}>
           <path d={`M${origin}L${end}`} stroke={color} />
           <text x={end[0] + 4} y={end[1] - 3} fill={color} fontSize="10">{label}</text>
         </g>)}
         {orbit && <circle cx={project([0, 0, 0])[0]} cy={project([0, 0, 0])[1]} r="4" fill="#c2f2ff" />}
-        {orbit && !showRoom && heading !== null && <path d={`M${project([0, -1.18, 0])}L${project([Math.sin(direction) * 2, -1.18, Math.cos(direction) * 2])}`}
+        {orbit && heading !== null && <path d={`M${project([0, -1.18, 0])}L${project([Math.sin(direction) * 2, -1.18, Math.cos(direction) * 2])}`}
           stroke="#c2f2ff" strokeWidth="2" strokeDasharray="5 4" />}
-        {!showRoom && hazards?.map((hazard, index) => {
-          if (!('position' in hazard)) return null
+        {hazards?.map((hazard, index) => {
+          if (!('position' in hazard) || (!orbit && hazard.position[2] < 0.08)) return null
           const [x, y] = project(hazard.position)
           const color = hazard.kind === 'person' ? '#ffc373' : '#ff8d81'
           return <g key={index}>
@@ -123,24 +162,17 @@ export function PointCloud({ points, pointColors, heading, hazards, phone, scanP
           </g>
         })}
       </svg>
-      <div className="scan-label">{showRoom ? 'ROOM SCAN' : phone ? 'ARKIT' : 'SIM'} / {visiblePoints?.length ?? 0} points</div>
-      {!visiblePoints?.length && <p className="scan-empty">{showRoom ? 'Pan slowly to scan the room' : !phone || points ? 'No depth returns' : 'Enable 3D scan sharing on the iPhone'}</p>}
+      <div className="scan-label">{phone ? 'ARKIT' : 'SIM'} / {points?.length ?? 0} points
+        {fallback ? ' / SVG fallback' : ''}</div>
+      {!points?.length && <p className="scan-empty">{!phone || points ? 'No depth returns' : 'Enable 3D scan sharing on the iPhone'}</p>}
     </div>
     <div className="legend">
       {hasCameraColor ? <span>Camera color</span>
-        : <span><i className="height-scale" />{showRoom ? 'Height relative to scan origin' : 'Height relative to phone'}</span>}
-      {roomAvailable && <div className="scan-modes">
-        <button aria-pressed={!room} onClick={() => setRoom(false)}>Live</button>
-        <button aria-pressed={room} onClick={() => setRoom(true)}>Room scan</button>
-        {room && <button onClick={() => {
-          roomScan.current.voxels.clear()
-          setRoomPoints([])
-        }}>Clear scan</button>}
-      </div>}
-      {!showRoom && <div className="scan-modes">
+        : <span><i className="height-scale" />Height relative to phone</span>}
+      <div className="scan-modes">
         <button aria-pressed={!angled} onClick={() => setAngled(false)}>Front</button>
         <button aria-pressed={angled} onClick={() => setAngled(true)}>Orbit</button>
-      </div>}
+      </div>
       <label className="orbit">Zoom <input type="range" min="0.6" max="2.5" step="0.05" value={zoom}
         onChange={event => setZoom(Number(event.target.value))} /></label>
       {orbit && <>
