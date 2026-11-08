@@ -13,6 +13,7 @@ interface Events {
   onStatus: { status: DepthStatus }
   onBeltStatus: BeltStatus & { state: string }
   onSiriDestination: Record<string, never>
+  onDestinationListening: Record<string, never>
   onHazardPreview: ModelPreview
   onHazardPreviewStatus: { message: string }
   onDenseScan: ScanPreview
@@ -24,6 +25,8 @@ interface DepthModule {
   stop(): void
   hasGoogleNavigation(): boolean
   announceRoute?(destination: string | null): void
+  listenForDestination?(): Promise<string | null>
+  cancelDestinationListening?(): void
   searchPlaces?(query: string): Promise<PlaceSuggestion[]>
   searchPlacesNear?(query: string, latitude: number, longitude: number): Promise<PlaceSuggestion[]>
   takeSiriDestination?(): Promise<string | null>

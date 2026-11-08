@@ -27,7 +27,7 @@ Google Navigation 0.19.0 autolinks the iOS SDK. The local Expo plugin initialize
 
 ### Siri
 
-After rebuilding, say **“Hey Siri, navigate with Lantern”** and answer with a place name or address. Under **Walking directions → Route options**, enable **Start Siri routes automatically** to start a walk to the first Google Places suggestion. The switch defaults to off. Lantern speaks the selected destination when a Siri route starts, including when you choose a result manually. The first run may require location permission and Google’s terms. Stop any active route before requesting another destination with Siri.
+On the iPhone, tap **Speak Destination**, wait for the vibration, then say a place name or address. The first use requests microphone and speech recognition permissions. Lantern uses on-device recognition for this button. You can also say **“Hey Siri, navigate with Lantern”** or invoke Siri with the side button. Typed entry and **Start spoken routes automatically** are under **Settings → Advanced → Enter destination or change Siri options → Route options**. Automatic start selects the first Google Places suggestion and defaults to off. Lantern speaks the selected destination when a spoken route starts. The first route may require location permission and Google’s terms. End an active route before requesting another one.
 
 ## Belt bench test
 
@@ -42,7 +42,7 @@ Trigger an obstacle while a directional cue is active, disconnect and reconnect,
 
 ## Phone telemetry and recordings
 
-On the phone, open **Settings → Advanced** for dashboard sharing and session recording.
+On the phone, press and hold **Settings** and choose **Advanced** for dashboard sharing and session recording. With VoiceOver, focus **Settings** and double-tap.
 
 With **Share 3D scan with dashboard** on, **Depth & confidence** shows distance and confidence from the same ARKit frame. Switch between **Raw** and **Smoothed** when available, and point at either image to read a pixel's distance and confidence. **Color range** controls display contrast. The 3D preview draws every finite positive sample in the ARKit depth raster, including low-confidence samples, with camera colors where available. **Front** uses the original camera framing, and **Orbit** lets you adjust rotation and tilt. Belt guidance continues to use its own range and confidence checks. Full RGB camera frames stay on-device.
 

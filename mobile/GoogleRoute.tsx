@@ -5,6 +5,7 @@ export interface GoogleRouteProps {
   onRoute: (route: Route | null) => void
   siriDestination?: { query: string }
   visible: boolean
+  voiceOnly: boolean
   endRequest: number
 }
 

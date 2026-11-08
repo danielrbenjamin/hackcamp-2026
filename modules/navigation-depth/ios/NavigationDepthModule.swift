@@ -11,11 +11,12 @@ public final class NavigationDepthModule: Module {
   private let model = TraversabilityModel()
   private let places = PlacesSearch()
   private let routeSpeech = AVSpeechSynthesizer()
+  private let destinationSpeech = DestinationSpeech()
   private var siriObserver: NSObjectProtocol?
 
   public func definition() -> ModuleDefinition {
     Name("NavigationDepth")
-    Events("onObservation", "onStatus", "onBeltStatus", "onSiriDestination", "onHazardPreview", "onHazardPreviewStatus", "onDenseScan", "onWalkFrame")
+    Events("onObservation", "onStatus", "onBeltStatus", "onSiriDestination", "onHazardPreview", "onHazardPreviewStatus", "onDenseScan", "onWalkFrame", "onDestinationListening")
     AsyncFunction("startWalkRecording") { [sensor = self.sensor] in
       sensor.startWalkRecording()
     }.runOnQueue(.main)
@@ -51,6 +52,12 @@ public final class NavigationDepthModule: Module {
         routeSpeech.stopSpeaking(at: .immediate)
         routeSpeech.speak(AVSpeechUtterance(string: message))
       }
+    }
+    AsyncFunction("listenForDestination") { [weak self, destinationSpeech = self.destinationSpeech] (promise: Promise) in
+      destinationSpeech.listen(promise) { [weak self] in self?.sendEvent("onDestinationListening", [:]) }
+    }.runOnQueue(.main)
+    Function("cancelDestinationListening") { [destinationSpeech = self.destinationSpeech] in
+      DispatchQueue.main.async { destinationSpeech.cancel() }
     }
     AsyncFunction("searchPlaces") { [places = self.places] (query: String, promise: Promise) in
       places.search(query, promise: promise)
@@ -96,9 +103,9 @@ public final class NavigationDepthModule: Module {
     Function("previewHazards") { [weak self] (enabled: Bool) in
       DispatchQueue.main.async { self?.sensor.setHazardPreview(enabled) }
     }
-    OnDestroy { [weak self, sensor = self.sensor, belt = self.belt] in
+    OnDestroy { [weak self, sensor = self.sensor, belt = self.belt, destinationSpeech = self.destinationSpeech] in
       self?.removeSiriObserver()
-      DispatchQueue.main.async { sensor.stop(); belt.stop() }
+      DispatchQueue.main.async { destinationSpeech.cancel(); sensor.stop(); belt.stop() }
     }
   }
 

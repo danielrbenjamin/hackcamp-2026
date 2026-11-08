@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ComponentRef } from 'react'
-import { AccessibilityInfo, AppState, Platform, Pressable, ScrollView, StatusBar, StyleSheet, Text, TextInput, useWindowDimensions, View } from 'react-native'
+import { AccessibilityInfo, AppState, Keyboard, Platform, Pressable, ScrollView, StatusBar, StyleSheet, Text, TextInput, useWindowDimensions, View } from 'react-native'
 import { File } from 'expo-file-system'
 import { shareAsync } from 'expo-sharing'
 import { ZONE_NAMES, type BeltStatus, type DenseScan, type DepthPreview, type ModelPreview, type Route, type Telemetry } from '../shared/contracts'
@@ -20,6 +20,8 @@ const disconnected: BeltStatus = { connected: false, battery: null, source: 'ble
 const beltDirections = ['Turn farther left', 'Veer left', 'Go straight', 'Veer right', 'Turn farther right']
 const scenarioChoices = Object.keys(scenarios) as Scenario[]
 const palette = { yellow: '#F8C200', blue: '#005299', red: '#E20004', cream: '#FFFDDE' }
+const siriPrompt = 'Say “Hey Siri, navigate with Lantern,” or hold the side button and say “Navigate with Lantern.”'
+const simulatedRoutePrompt = 'Set a simulated destination in Settings, then Advanced.'
 
 function hasFreshRouteLocation(route: Route): boolean {
   const age = Date.now() - (route.updatedAtMs ?? 0)
@@ -38,7 +40,11 @@ export default function App() {
   const [frame, setFrame] = useState<Telemetry>()
   const [scenario, setScenario] = useState<Scenario>('walk')
   const [native, setNative] = useState(Platform.OS === 'ios' && !!nativeDepth)
-  const [screen, setScreen] = useState<'home' | 'settings' | 'advanced' | 'route'>('home')
+  const [screen, setScreen] = useState<'home' | 'settings' | 'advanced' | 'route' | 'siri'>('home')
+  const [showSiriPrompt, setShowSiriPrompt] = useState(false)
+  const [voiceStatus, setVoiceStatus] = useState('')
+  const [voiceListening, setVoiceListening] = useState(false)
+  const voicePending = useRef(false)
   const scrollView = useRef<ComponentRef<typeof ScrollView>>(null)
   const screenHeading = useRef<ComponentRef<typeof Text>>(null)
   const previousScreen = useRef(screen)
@@ -76,11 +82,12 @@ export default function App() {
     google.current = route
     const active = !!route && route.status !== 'idle'
     setRouteActive(active)
-    if (active) setScreen(current => current === 'route' ? 'home' : current)
+    if (active) setScreen(current => current === 'route' || current === 'siri' ? 'home' : current)
   }, [])
 
   useEffect(() => {
     if (previousScreen.current === screen) return
+    if (previousScreen.current === 'route') Keyboard.dismiss()
     previousScreen.current = screen
     scrollView.current?.scrollTo({ y: 0, animated: false })
     const frame = requestAnimationFrame(() => {
@@ -95,9 +102,11 @@ export default function App() {
     function readDestination() {
       void nativeDepth?.takeSiriDestination?.().then(query => {
         if (!active || !query) return
+        nativeDepth?.cancelDestinationListening?.()
         setSiriDestination({ query })
         setNative(true)
-        if (!google.current) setScreen('route')
+        setShowSiriPrompt(false)
+        if (!google.current) setScreen('siri')
         setStatus(current => current === 'idle' ? 'starting' : current)
       }).catch(() => {})
     }
@@ -105,6 +114,15 @@ export default function App() {
     const appState = AppState.addEventListener('change', state => { if (state === 'active') readDestination() })
     readDestination()
     return () => { active = false; listener.remove(); appState.remove() }
+  }, [])
+
+  useEffect(() => {
+    if (!nativeDepth?.listenForDestination) return
+    const listener = nativeDepth.addListener('onDestinationListening', () => setVoiceStatus('Listening for your destination…'))
+    const appState = AppState.addEventListener('change', state => {
+      if (state === 'background') nativeDepth?.cancelDestinationListening?.()
+    })
+    return () => { listener.remove(); appState.remove(); nativeDepth?.cancelDestinationListening?.() }
   }, [])
 
   useEffect(() => {
@@ -383,49 +401,96 @@ export default function App() {
   }
 
   function routeAction() {
-    if (!hasRoute) setScreen('route')
+    if (screen === 'siri') setScreen('home')
+    else if (!hasRoute && native) {
+      if (voicePending.current) { nativeDepth?.cancelDestinationListening?.(); return }
+      if (!nativeDepth?.listenForDestination) {
+        setShowSiriPrompt(true)
+        AccessibilityInfo.announceForAccessibility(siriPrompt)
+        return
+      }
+      voicePending.current = true
+      setVoiceListening(true)
+      setShowSiriPrompt(false)
+      setVoiceStatus('Opening microphone…')
+      void nativeDepth.listenForDestination().then(query => {
+        setVoiceStatus('')
+        if (!query) return
+        setSiriDestination({ query })
+        setScreen('siri')
+      }).catch(error => {
+        const message = error instanceof Error ? error.message : 'Could not hear a destination.'
+        setVoiceStatus(message)
+        setShowSiriPrompt(true)
+        AccessibilityInfo.announceForAccessibility(`${message} ${siriPrompt}`)
+      }).finally(() => {
+        voicePending.current = false
+        setVoiceListening(false)
+      })
+    }
+    else if (!hasRoute) {
+      setShowSiriPrompt(true)
+      AccessibilityInfo.announceForAccessibility(simulatedRoutePrompt)
+    }
     else if (native) setEndRequest(value => value + 1)
     else mock.setDestination('')
   }
 
+  const voiceRoute = screen === 'siri'
+  const manualRoute = screen === 'route'
+  const routeOpen = manualRoute || voiceRoute
+  const homeLayout = screen === 'home' || voiceRoute
+
   return (
-    <ScrollView ref={scrollView} style={[styles.page, screen === 'home' && { backgroundColor: homeColor }]}
-      contentContainerStyle={[styles.content, screen === 'home' && styles.homeContent]}
+    <ScrollView ref={scrollView} style={[styles.page, homeLayout && { backgroundColor: homeColor }]}
+      contentContainerStyle={[styles.content, homeLayout && styles.homeContent]}
       contentInsetAdjustmentBehavior="automatic" keyboardDismissMode="on-drag" keyboardShouldPersistTaps="handled">
-      <StatusBar barStyle={screen === 'home' && homeColor === palette.yellow ? 'dark-content' : 'light-content'} />
-      {screen === 'home' ? <>
-        <View style={styles.homeHeader}>
-          <Pressable accessibilityRole="button" onPress={() => setScreen('settings')} style={styles.settingsButton}>
-            <Text style={[styles.settingsText, { color: homeInk }]}>Settings</Text>
-          </Pressable>
-        </View>
-        <HomeButton label={native ? beltEnabled ? 'Disconnect Belt' : 'Connect Belt' : connected ? 'Disconnect Belt' : 'Connect Belt'}
-          onPress={toggleBelt} largeText={fontScale > 1.15} />
-        <View style={[styles.homeReadout, fontScale > 1.15 && styles.homeIntrinsic]}>
-          <Text ref={screenHeading} accessible accessibilityRole="header"
-            style={[styles.homeStatus, width < 360 && styles.homeStatusCompact, { color: homeInk }]}>{homeStatus}</Text>
-        </View>
-        <HomeButton label={hasRoute ? 'End Route' : 'Set Destination'} onPress={routeAction} largeText={fontScale > 1.15} />
-      </> : <View style={styles.settings}>
-        <Control label={screen === 'advanced' ? 'Back to Settings' : 'Back to Home'}
-          onPress={() => setScreen(screen === 'advanced' ? 'settings' : 'home')} />
+      <StatusBar barStyle={homeLayout && homeColor === palette.yellow ? 'dark-content' : 'light-content'} />
+      {!homeLayout && <View style={styles.settings}>
+        <Control label={manualRoute ? 'Back to Advanced' : screen === 'advanced' ? 'Back to Settings' : 'Back to Home'}
+          onPress={() => setScreen(manualRoute ? 'advanced' : screen === 'advanced' ? 'settings' : 'home')} />
         <Text ref={screenHeading} accessible accessibilityRole="header" style={styles.kicker}>
-          {screen === 'settings' ? 'Settings' : screen === 'advanced' ? 'Advanced' : 'Set destination'}
+          {manualRoute ? 'Enter destination' : screen === 'settings' ? 'Settings' : 'Advanced'}
         </Text>
       </View>}
+      {homeLayout && <HomeButton label={native ? beltEnabled ? 'Disconnect Belt' : 'Connect Belt' : connected ? 'Disconnect Belt' : 'Connect Belt'}
+        onPress={toggleBelt} largeText={fontScale > 1.15} />}
+      <View style={homeLayout ? [styles.homeReadout, !voiceRoute && fontScale > 1.15 && styles.homeIntrinsic]
+        : manualRoute ? styles.panel : styles.hidden}>
+          {homeLayout && <Text ref={voiceRoute ? undefined : screenHeading} accessible accessibilityRole="header"
+            style={[styles.homeStatus, width < 360 && styles.homeStatusCompact, voiceRoute && styles.routeStatus, { color: homeInk }]}>{homeStatus}</Text>}
+          {screen === 'home' && showSiriPrompt && !hasRoute &&
+            <Text style={[styles.siriPrompt, { color: homeInk }]}>{native ? siriPrompt : simulatedRoutePrompt}</Text>}
+          {screen === 'home' && voiceStatus &&
+            <Text style={[styles.siriPrompt, { color: homeInk }]}>{voiceStatus}</Text>}
+          {screen === 'home' && <View style={styles.homeSettings}>
+            <Pressable accessibilityRole="button" accessibilityLabel="Settings"
+              accessibilityActions={[{ name: 'activate' }]}
+              onAccessibilityAction={event => {
+                if (event.nativeEvent.actionName === 'activate') setScreen('settings')
+              }}
+              onAccessibilityTap={() => setScreen('settings')}
+              onPress={Platform.OS === 'web' ? () => setScreen('settings') : undefined}
+              delayLongPress={650} onLongPress={() => setScreen('settings')} style={styles.settingsButton}>
+              <Text style={[styles.settingsText, { color: homeInk }]}>
+                {Platform.OS === 'web' ? 'Settings' : 'Hold for Settings'}
+              </Text>
+            </Pressable>
+          </View>}
+          <ScrollView style={voiceRoute ? styles.routeEditor : manualRoute ? undefined : styles.hidden} nestedScrollEnabled
+            keyboardShouldPersistTaps="handled" contentContainerStyle={styles.routeEditorContent}>
+            {voiceRoute && <Text ref={screenHeading} accessible accessibilityRole="header" style={styles.routeHeading}>Spoken destination</Text>}
+            {native && <GoogleRoute onRoute={onRoute} visible={routeOpen} voiceOnly={voiceRoute} endRequest={endRequest}
+              siriDestination={status === 'idle' || status === 'starting' ? undefined : siriDestination} />}
+          </ScrollView>
+      </View>
+      {homeLayout && <HomeButton label={voiceRoute ? 'Close Results' : hasRoute ? 'End Route'
+        : voiceListening ? 'Cancel Listening' : native ? 'Speak Destination' : 'Set Destination'}
+        hint={native && !voiceRoute && !hasRoute && !voiceListening
+          ? nativeDepth?.listenForDestination ? 'Wait for the vibration, then say a place or address.' : 'Hear how to set a destination with Siri.'
+          : undefined}
+        onPress={routeAction} largeText={fontScale > 1.15} />}
       {screen === 'settings' && <Control label="Advanced" onPress={() => setScreen('advanced')} />}
-      {native && <View key="google-route" style={screen === 'route' ? styles.panel : styles.hidden}>
-        <GoogleRoute onRoute={onRoute} visible={screen === 'route'} endRequest={endRequest}
-          siriDestination={status === 'idle' || status === 'starting' ? undefined : siriDestination} />
-      </View>}
-      {screen === 'route' && !native && <View style={styles.panel}>
-        <TextInput accessibilityLabel="Simulated destination" style={styles.input} value={destination}
-          onChangeText={setDestination} onSubmitEditing={() => {
-            if (destination.trim()) { mock.setDestination(destination); setScreen('home') }
-          }} returnKeyType="go" />
-        <Control label="Start simulated route" disabled={!destination.trim()}
-          onPress={() => { mock.setDestination(destination); setScreen('home') }} />
-      </View>}
       {screen === 'advanced' && <>
       <View style={styles.banner}>
         <Text accessible accessibilityRole="header" accessibilityLabel="Lantern"
@@ -448,6 +513,7 @@ export default function App() {
       {native && <View style={styles.panel}>
         <Text accessibilityRole="header" style={styles.kicker}>Walking directions</Text>
         <RouteCard route={frame?.route.source === 'google' ? frame.route : undefined} />
+        {!hasRoute && <Control label="Enter destination or change Siri options" onPress={() => setScreen('route')} />}
       </View>}
       <View style={styles.panel}>
         <Text accessibilityRole="header" style={styles.kicker}>Sensor readings</Text>
@@ -541,8 +607,8 @@ export default function App() {
   )
 }
 
-function HomeButton({ label, onPress, largeText }: { label: string; onPress: () => void; largeText: boolean }) {
-  return <Pressable accessibilityRole="button" onPress={onPress}
+function HomeButton({ label, hint, onPress, largeText }: { label: string; hint?: string; onPress: () => void; largeText: boolean }) {
+  return <Pressable accessibilityRole="button" accessibilityLabel={label} accessibilityHint={hint} onPress={onPress}
     style={({ pressed }) => [styles.homeButton, largeText && styles.homeIntrinsic, pressed && styles.homeButtonPressed]}>
     <Text style={styles.homeButtonText}>{label}</Text>
   </Pressable>
@@ -566,17 +632,22 @@ const styles = StyleSheet.create({
   settings: { gap: 8 },
   hidden: { display: 'none' },
   homeContent: { flexGrow: 1, paddingHorizontal: 28, paddingBottom: 24, gap: 12 },
-  homeHeader: { alignItems: 'flex-end' },
+  homeSettings: { alignItems: 'center' },
   settingsButton: { minHeight: 44, justifyContent: 'center', paddingHorizontal: 10 },
   settingsText: { fontSize: 18, fontWeight: '700' },
   homeButton: { flexGrow: 1, flexBasis: 0, minHeight: 104, backgroundColor: palette.cream, borderWidth: 3,
     borderColor: '#000', borderRadius: 28, justifyContent: 'center', padding: 16 },
   homeButtonPressed: { opacity: 0.82 },
   homeButtonText: { color: '#000', fontSize: 36, fontWeight: '800', textAlign: 'center' },
-  homeReadout: { flexGrow: 1, flexBasis: 0, minHeight: 144, justifyContent: 'center', paddingVertical: 12 },
+  homeReadout: { flexGrow: 1, flexBasis: 0, minHeight: 188, justifyContent: 'center', paddingVertical: 12 },
   homeIntrinsic: { flexBasis: 'auto' },
   homeStatus: { fontSize: 36, fontWeight: '800', textAlign: 'center' },
   homeStatusCompact: { fontSize: 30 },
+  routeStatus: { fontSize: 22, marginBottom: 8 },
+  routeEditor: { flex: 1, minHeight: 100, backgroundColor: terminal.surface, borderRadius: 14 },
+  routeEditorContent: { padding: 12, gap: 10 },
+  routeHeading: { color: terminal.text, fontSize: 20, fontWeight: '700' },
+  siriPrompt: { fontSize: 16, textAlign: 'center', marginTop: 8 },
   alertPanel: { backgroundColor: '#342418' },
   row: { flexDirection: 'row', gap: 8, flexWrap: 'wrap' },
   scenarioList: { gap: 8 },

@@ -22,7 +22,7 @@ export default function GoogleRoute(props: GoogleRouteProps) {
   </NavigationProvider>
 }
 
-function WalkingRoute({ onRoute, siriDestination, visible, endRequest }: GoogleRouteProps) {
+function WalkingRoute({ onRoute, siriDestination, visible, voiceOnly, endRequest }: GoogleRouteProps) {
   const {
     navigationController: controller, setOnLocationChanged, setOnRouteChanged,
     setOnReroutingRequestedByOffRoute, setOnTurnByTurn, setOnArrival,
@@ -326,6 +326,7 @@ function WalkingRoute({ onRoute, siriDestination, visible, endRequest }: GoogleR
     {!initialized ? <ActionButton primary label={busy ? 'Setting up navigation…' : 'Enable Google Navigation'}
       disabled={busy} onPress={() => void connect()} /> : <>
       {!guiding && <>
+      {voiceOnly ? <Text style={styles.label}>{destination}</Text> : <>
       <Text style={styles.label}>Destination</Text>
       <TextInput accessibilityLabel="Walking destination"
         accessibilityHint={manual ? 'Enter latitude and longitude or a Google Place ID' : 'Type or dictate a place, then swipe to the search results'}
@@ -333,6 +334,7 @@ function WalkingRoute({ onRoute, siriDestination, visible, endRequest }: GoogleR
         placeholderTextColor="#aab9c9" value={destination} editable={!guiding && !busy}
         autoCapitalize={manual ? 'none' : 'sentences'} returnKeyType={manual ? 'done' : 'search'}
         onChangeText={editDestination} style={styles.input} />
+      </>}
       {!manual && (suggestions.length > 0 || selected) && <View style={styles.suggestions}>
         {suggestions.length > 0 && <Text accessibilityRole="header" style={styles.resultsHeading}>Search results</Text>}
         {suggestions.map(place => <ActionButton key={place.placeId} label={place.label} disabled={busy}
@@ -350,13 +352,13 @@ function WalkingRoute({ onRoute, siriDestination, visible, endRequest }: GoogleR
         disabled={busy || (!guiding && (manual ? !destination.trim() : !selected))}
         onPress={() => void (guiding ? stop() : start())} />
     </>}
-    {!guiding && <>
+    {!guiding && !voiceOnly && <>
       <ActionButton label="Route options" expanded={showOptions} onPress={() => setShowOptions(!showOptions)} />
       {showOptions && <>
         <SettingSwitch label="Spoken walking directions" value={spokenDirections} disabled={busy} onChange={setSpokenDirections} />
         {nativeDepth?.announceRoute && <SettingSwitch label="Announce route start" value={announceStart}
           disabled={busy} onChange={setAnnounceStart} />}
-        {nativeDepth?.setSiriAutoStart && <SettingSwitch label="Start Siri routes automatically" value={autoStart}
+        {nativeDepth?.setSiriAutoStart && <SettingSwitch label="Start spoken routes automatically" value={autoStart}
           disabled={busy} onChange={enabled => {
             nativeDepth?.setSiriAutoStart?.(enabled)
             setAutoStart(enabled)

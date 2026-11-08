@@ -10,7 +10,9 @@
     "ios": {
       "bundleIdentifier": "com.hackcamp2026.navigationbelt",
       "infoPlist": {
-        "NSCameraUsageDescription": "The navigation prototype uses the camera and LiDAR to measure obstacles while sensing is active."
+        "NSCameraUsageDescription": "The navigation prototype uses the camera and LiDAR to measure obstacles while sensing is active.",
+        "NSMicrophoneUsageDescription": "Lantern listens when you choose to speak a destination.",
+        "NSSpeechRecognitionUsageDescription": "Lantern converts your spoken destination into text on this iPhone."
       }
     }
   }
