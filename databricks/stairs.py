@@ -10,87 +10,9 @@
 #   "matplotlib",
 #   "numpy",
 #   "mlflow",
+#   "coremltools",
 # ]
 # ///
-from pathlib import Path, PurePosixPath
-import json
-import random
-import re
-import zipfile
-from collections import Counter, defaultdict
-
-ROOT = Path("/Volumes/workspace/default/stair_sample")
-archives = sorted(ROOT.glob("*.zip"))
-assert len(archives) == 1, f"Upload exactly one ZIP to {ROOT}. Found: {[p.name for p in archives]}"
-ZIP_PATH = archives[0]
-
-hints = {
-    "rgb": {"rgb", "color", "colour", "image", "images", "img", "left"},
-        "depth": {"depth", "depths", "dep", "disparity"},
-            "mask": {"mask", "masks", "label", "labels", "annotation", "annotations", "seg", "segmentation", "semantic", "groundtruth", "ground_truth", "gt"},
-            }
-            all_hints = set().union(*hints.values())
-            extensions = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"}
-
-            def tokens(value):
-                return [part for part in re.split(r"[^a-z0-9]+", value.lower()) if part]
-
-                def modality(member):
-                    path = PurePosixPath(member.replace("\\", "/"))
-                        found = set()
-                            for part in path.parts:
-                                    found.update(tokens(PurePosixPath(part).stem))
-                                        if found & hints["mask"]:
-                                                return "mask"
-                                                    if found & hints["depth"]:
-                                                            return "depth"
-                                                                if found & hints["rgb"]:
-                                                                        return "rgb"
-                                                                            return None
-
-                                                                            def sample_key(member):
-                                                                                path = PurePosixPath(member.replace("\\", "/"))
-                                                                                    clean = []
-                                                                                        for part in path.with_suffix("").parts:
-                                                                                                kept = [token for token in tokens(part) if token not in all_hints]
-                                                                                                        if kept:
-                                                                                                                    clean.append("_".join(kept))
-                                                                                                                        return "/".join(clean)
-
-                                                                                                                        with zipfile.ZipFile(ZIP_PATH) as archive:
-                                                                                                                            members = [item.filename for item in archive.infolist() if not item.is_dir()]
-
-                                                                                                                            groups = defaultdict(lambda: {"rgb": [], "depth": [], "mask": []})
-                                                                                                                            unclassified = []
-                                                                                                                            counts = Counter()
-                                                                                                                            for member in members:
-                                                                                                                                if PurePosixPath(member).suffix.lower() not in extensions:
-                                                                                                                                        continue
-                                                                                                                                            kind = modality(member)
-                                                                                                                                                if kind is None:
-                                                                                                                                                        unclassified.append(member)
-                                                                                                                                                                continue
-                                                                                                                                                                    counts[kind] += 1
-                                                                                                                                                                        groups[sample_key(member)][kind].append(member)
-
-                                                                                                                                                                        triplets = []
-                                                                                                                                                                        for key, group in sorted(groups.items()):
-                                                                                                                                                                            if all(len(group[kind]) == 1 for kind in ("rgb", "depth", "mask")):
-                                                                                                                                                                                    triplets.append({"key": key, "rgb": group["rgb"][0], "depth": group["depth"][0], "mask": group["mask"][0]})
-
-                                                                                                                                                                                    report = {
-                                                                                                                                                                                        "zip": ZIP_PATH.name,
-                                                                                                                                                                                            "files": len(members),
-                                                                                                                                                                                                "modality_counts": dict(counts),
-                                                                                                                                                                                                    "matched_triplets": len(triplets),
-                                                                                                                                                                                                        "first_files": members[:30],
-                                                                                                                                                                                                            "matched_examples": triplets[:5],
-                                                                                                                                                                                                                "unclassified_examples": unclassified[:30],
-                                                                                                                                                                                                                }
-                                                                                                                                                                                                                print(json.dumps(report, indent=2))
-
-# COMMAND ----------
-
 # MAGIC
 # MAGIC %pip install transformers torch pillow matplotlib
 # MAGIC
@@ -1876,3 +1798,325 @@ with mlflow.start_run() as run:
     print("Best foreground IoU:", best_foreground_iou)
     print("Saved model:", checkpoint_path)
     print("MLflow run:", run.info.run_id)
+
+# COMMAND ----------
+
+
+import json
+from pathlib import Path
+
+import torch
+import torch.nn as nn
+from torchvision.models.segmentation import deeplabv3_resnet50
+
+CHECKPOINT = Path(
+    "/Volumes/workspace/default/stair_sample/"
+    "prepared_stairs_v2/best_rgbd_deeplabv3_stairs.pt"
+)
+
+EXPORT_DIR = CHECKPOINT.parent / "export"
+EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+
+checkpoint = torch.load(
+    CHECKPOINT, map_location="cpu", weights_only=False
+)
+
+if isinstance(checkpoint, dict):
+    state = next(
+        (
+            checkpoint[key]
+            for key in [
+                "model_state_dict",
+                "model_state",
+                "state_dict",
+                "model",
+            ]
+            if key in checkpoint
+            and isinstance(checkpoint[key], dict)
+        ),
+        checkpoint
+    )
+else:
+    raise ValueError("Unexpected checkpoint format helloooooo")
+
+state = {
+    k.removeprefix("module."): v
+    for k, v in state.items()
+}
+
+has_aux = any(
+    k.startswith("aux_classifier.") for k in state
+)
+
+num_classes = state["classifier.4.weight"].shape[0]
+input_channels = state["backbone.conv1.weight"].shape[1]
+
+assert input_channels == 4, input_channels
+assert num_classes == 3, num_classes
+
+model = deeplabv3_resnet50(
+    weights=None,
+    weights_backbone=None,
+    num_classes=num_classes,
+    aux_loss=has_aux
+)
+
+original = model.backbone.conv1
+
+model.backbone.conv1 = nn.Conv2d(
+    4,
+    original.out_channels,
+    kernel_size=original.kernel_size,
+    stride=original.stride,
+    padding=original.padding,
+    bias=False
+)
+
+if has_aux:
+    aux_classes = state["aux_classifier.4.weight"].shape[0]
+    model.aux_classifier[4] = nn.Conv2d(
+        256, aux_classes, 1
+    )
+
+model.load_state_dict(state, strict=True)
+model.eval()
+
+class StairInference(nn.Module):
+    def __init__(self, network):
+        super().__init__()
+        self.network = network
+
+    def forward(self, x):
+        return self.network(x)["out"]
+
+wrapped = StairInference(model).eval()
+
+example = torch.rand(1, 4, 384, 384)
+
+with torch.inference_mode():
+    traced = torch.jit.trace(wrapped, example)
+    traced = torch.jit.freeze(traced)
+
+    expected = wrapped(example)
+    actual = traced(example)
+
+torch.testing.assert_close(
+    expected, actual, rtol=1e-4, atol=1e-4
+)
+
+EXPORT_PATH = EXPORT_DIR / "StairSegmentation_torchscript.pt"
+traced.save(str(EXPORT_PATH))
+
+config = {
+    "model": "DeepLabV3-ResNet50",
+    "input_shape": [1, 4, 384, 384],
+    "input_channels": ["R", "G", "B", "depth"],
+    "output_shape": [1, 3, 384, 384],
+    "class_labels": [
+        "background",
+        "stair_riser",
+        "stair_tread"
+    ],
+    "output_processing": "argmax over class channel",
+    "preprocessing": (
+        "Must exactly match training rgb normalization "
+        "and depth encoding in ml.py"
+    ),
+    "validation_foreground_mean_iou": 0.928995
+}
+
+(EXPORT_DIR / "stair_model_config.json").write_text(
+    json.dumps(config, indent=2)
+)
+
+print("TORCHSCRIPT EXPORT SUCCESSFUL!!!!!!!!!!")
+print("Saved:", EXPORT_PATH)
+print("Output shape:", tuple(actual.shape))
+
+# COMMAND ----------
+
+# MAGIC %pip install coremltools
+
+# COMMAND ----------
+
+# MAGIC %restart_python
+
+# COMMAND ----------
+
+
+import coremltools as ct
+import numpy as np
+import shutil
+from pathlib import Path
+
+EXPORT_DIR = Path(
+    "/Volumes/workspace/default/stair_sample/"
+    "prepared_stairs_v2/export"
+)
+
+TORCHSCRIPT = EXPORT_DIR / "StairSegmentation_torchscript.pt"
+
+coreml_model = ct.convert(
+    str(TORCHSCRIPT),
+    convert_to="mlprogram",
+    inputs=[
+        ct.TensorType(
+            name="rgbd",
+            shape=(1, 4, 384, 384),
+            dtype=np.float32
+        )
+    ],
+    outputs=[
+        ct.TensorType(name="logits")
+    ],
+    minimum_deployment_target=ct.target.iOS16,
+    compute_precision=ct.precision.FLOAT16
+)
+
+package_path = "/tmp/StairSegmentation.mlpackage"
+coreml_model.save(package_path)
+
+zip_path = shutil.make_archive(
+    "/tmp/StairSegmentation",
+    "zip",
+    root_dir="/tmp",
+    base_dir="StairSegmentation.mlpackage"
+)
+
+destination = EXPORT_DIR / "StairSegmentation.zip"
+shutil.copy2(zip_path, destination)
+
+print("CORE ML EXPORT COMPLETE!!")
+print("Download:", destination)
+
+
+# COMMAND ----------
+
+
+from pathlib import Path
+import numpy as np
+import torch
+import torch.nn as nn
+import mlflow
+import mlflow.pytorch
+
+from mlflow.models import infer_signature
+from torchvision.models.segmentation import deeplabv3_resnet50
+
+BASE = Path(
+    "/Volumes/workspace/default/stair_sample/prepared_stairs_v2"
+)
+
+TORCHSCRIPT = BASE / "export/StairSegmentation_torchscript.pt"
+CHECKPOINT = BASE / "best_rgbd_deeplabv3_stairs.pt"
+
+if TORCHSCRIPT.exists():
+    model = torch.jit.load(
+        str(TORCHSCRIPT),
+        map_location="cpu"
+    ).eval()
+else:
+    checkpoint = torch.load(
+        CHECKPOINT,
+        map_location="cpu",
+        weights_only=False
+    )
+
+    state = checkpoint
+
+    if isinstance(checkpoint, dict):
+        for key in [
+            "model_state_dict",
+            "model_state",
+            "state_dict",
+            "model"
+        ]:
+            if isinstance(checkpoint.get(key), dict):
+                state = checkpoint[key]
+                break
+
+    state = {
+        k.removeprefix("module."): v
+        for k, v in state.items()
+    }
+
+    has_aux = any(
+        k.startswith("aux_classifier.")
+        for k in state
+    )
+
+    network = deeplabv3_resnet50(
+        weights=None,
+        weights_backbone=None,
+        num_classes=3,
+        aux_loss=has_aux
+    )
+
+    original = network.backbone.conv1
+
+    network.backbone.conv1 = nn.Conv2d(
+        4,
+        original.out_channels,
+        kernel_size=original.kernel_size,
+        stride=original.stride,
+        padding=original.padding,
+        bias=False
+    )
+
+    if has_aux:
+        aux_classes = state["aux_classifier.4.weight"].shape[0]
+        network.aux_classifier[4] = nn.Conv2d(
+            256,
+            aux_classes,
+            1
+        )
+
+    network.load_state_dict(state, strict=True)
+    network.eval()
+
+    class StairWrapper(nn.Module):
+        def __init__(self, network):
+            super().__init__()
+            self.network = network
+
+        def forward(self, x):
+            return self.network(x)["out"]
+
+    with torch.inference_mode():
+        model = torch.jit.trace(
+            StairWrapper(network).eval(),
+            torch.zeros(1, 4, 384, 384),
+            check_trace=False
+        ).eval()
+
+example = np.zeros(
+    (1, 4, 384, 384),
+    dtype=np.float32
+)
+
+with torch.inference_mode():
+    output = model(
+        torch.from_numpy(example)
+    ).detach().numpy()
+
+assert output.shape == (1, 3, 384, 384)
+
+signature = infer_signature(example, output)
+
+mlflow.set_registry_uri("databricks-uc")
+
+with mlflow.start_run(
+    run_name="lantern_stair_model_registration"
+):
+    result = mlflow.pytorch.log_model(
+        pytorch_model=model,
+        name="lantern_stair_segmentation",
+        signature=signature,
+        input_example=example,
+        serialization_format="pickle",
+        registered_model_name="workspace.default.lantern_stairs"
+    )
+
+print("STAIR MODEL REGISTERED")
+print("Name: workspace.default.lantern_stairs")
+print("Model URI:", result.model_uri)
