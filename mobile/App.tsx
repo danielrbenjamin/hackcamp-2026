@@ -110,7 +110,7 @@ export default function App() {
       const time = value.observation.timeMs
       if (time <= lastRecorded.current || (native ? !value.observation.depth : time - lastRecorded.current < 500)) return
       lastRecorded.current = time
-      session.current.append(value)
+      session.current.append({ ...value, modelPreview: native ? latestModelPreview.current : undefined })
       const size = session.current.count()
       setCount(size)
       if (size >= 240) stopRecording()

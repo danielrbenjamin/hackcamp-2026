@@ -135,8 +135,18 @@ final class HazardModels {
     var status = ["glass": "Waiting", "stairs": "Waiting", "person": "Waiting"]
     var masks: [[String: Any]] = []
     var people: [[String: Any]] = []
+    let pose = frame.camera.transform
+    let cameraPose = [pose.columns.0, pose.columns.1, pose.columns.2, pose.columns.3]
+      .flatMap { [$0.x, $0.y, $0.z, $0.w] }
     func snapshot(partial: Bool) -> [String: Any] {
-      ["timeMs": timeMs, "latencyMs": (ProcessInfo.processInfo.systemUptime - started) * 1_000,
+      let names = ["glass": "GlassSegmentation", "stairs": "StairSegmentation", "person": "PersonDetection"]
+      var versions: [String: String] = [:]
+      for (kind, name) in names {
+        if let version = models[name]?.modelDescription.metadata[.versionString] as? String,
+           !version.isEmpty { versions[kind] = version }
+      }
+      return ["timeMs": timeMs, "cameraPose": cameraPose, "trackingSession": String(session),
+       "modelVersions": versions, "latencyMs": (ProcessInfo.processInfo.systemUptime - started) * 1_000,
        "models": status, "masks": masks, "people": people, "partial": partial]
     }
     if let error = unavailable["person"] { status["person"] = error }

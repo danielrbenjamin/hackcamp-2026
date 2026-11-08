@@ -28,6 +28,11 @@ export interface DepthPreview {
 
 export interface ModelPreview {
   timeMs: number
+  // Pose and tracking generation belong to the model's captured frame, which
+  // can be older than the current navigation observation.
+  cameraPose?: readonly number[]
+  trackingSession?: string
+  modelVersions?: Partial<Record<'glass' | 'stairs' | 'person', string>>
   latencyMs: number
   partial?: boolean
   depthPreview?: DepthPreview

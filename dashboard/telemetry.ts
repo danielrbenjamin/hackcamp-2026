@@ -50,7 +50,8 @@ function validPreview(preview: unknown) {
 export function validModelPreview(preview: unknown) {
   if (preview === undefined) return true
   if (!preview || typeof preview !== 'object') return false
-  const { timeMs, latencyMs, models, masks, people, depthPreview, partial, scan, denseScan } = preview as import('../shared/contracts').ModelPreview
+  const { timeMs, latencyMs, models, masks, people, depthPreview, partial, scan, denseScan,
+    cameraPose, trackingSession, modelVersions } = preview as ModelPreview
   const point = (value: unknown) => Array.isArray(value) && value.length === 3 &&
     value.every(n => Number.isFinite(n) && Math.abs(n) <= 10)
   const validScan = scan === undefined || (!!scan && Array.isArray(scan.points) && scan.points.length > 0 &&
@@ -62,6 +63,11 @@ export function validModelPreview(preview: unknown) {
     (scan.pointColors === undefined || (typeof scan.pointColors === 'string' &&
       scan.pointColors.length === scan.points.length * 4 && /^[A-Za-z0-9+/]+$/.test(scan.pointColors))))
   return validScan && validDenseScan(denseScan) && (!denseScan || denseScan.timeMs === timeMs) &&
+    (cameraPose === undefined || (Array.isArray(cameraPose) && cameraPose.length === 16 && cameraPose.every(Number.isFinite))) &&
+    (trackingSession === undefined || (typeof trackingSession === 'string' && trackingSession.length > 0 && trackingSession.length <= 64)) &&
+    (modelVersions === undefined || (!!modelVersions && typeof modelVersions === 'object' && !Array.isArray(modelVersions) &&
+      Object.entries(modelVersions).every(([key, version]) => ['glass', 'stairs', 'person'].includes(key) &&
+        typeof version === 'string' && version.length > 0 && version.length <= 120))) &&
     validPreview(depthPreview) && (partial === undefined || typeof partial === 'boolean') &&
     Number.isFinite(timeMs) && Number.isFinite(latencyMs) && latencyMs >= 0 &&
     !!models && ['glass', 'stairs', 'person'].every(kind => typeof models[kind as keyof typeof models] === 'string' &&

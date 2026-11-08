@@ -31,6 +31,22 @@ test('relay rejects truncated or unsupported mask rasters', () => {
   assert.equal(validModelPreview(preview(512)), false)
 })
 
+test('recording metadata preserves the preview pose and real artifact versions', () => {
+  const value = preview(224)
+  value.cameraPose = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 2, 0, 3, 1]
+  value.trackingSession = '4'
+  value.modelVersions = { glass: 'artifact-3' }
+  assert.equal(validModelPreview(value), true)
+  value.cameraPose = [1, 2, 3]
+  assert.equal(validModelPreview(value), false)
+  value.cameraPose = undefined
+  value.trackingSession = ''
+  assert.equal(validModelPreview(value), false)
+  value.trackingSession = '4'
+  value.modelVersions = { glass: '' }
+  assert.equal(validModelPreview(value), false)
+})
+
 test('dense semantic frame colors every measured return without the 576-point cap', () => {
   const value = preview(384, 'stairs')
   const width = 256, height = 192
